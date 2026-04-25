@@ -153,6 +153,32 @@ new milestone.
   (GitHub marks them outdated when the head moves). They're still meaningful — show
   them somewhere (file-level pinned panel, or anchored to the original line on the
   base side) rather than silently discarding.
+- **Headless TUI testing harness.** Today verifying any UI change requires the
+  user to launch prowler, open a real PR, and reproduce the scenario manually.
+  Add infrastructure so an agent (or CI) can drive the UI without a terminal:
+  - **Render layer:** ratatui's `TestBackend` lets you render any frame to an
+    in-memory `Buffer` and inspect cell-by-cell. Wrap `tui::review::render`
+    so it can be called with a `TestBackend`-backed `Frame`, then assert on
+    the resulting `Buffer` (e.g., snapshot the BASE pane after toggling a
+    thread).
+  - **State layer:** `ReviewState::new` currently demands `token`, `owner`,
+    `repo`, and a live `Session`. For tests, expose a `ReviewState::for_test`
+    constructor that takes a fixture `PrMetadata` + `Vec<FileDiff>` +
+    `Vec<CommentThread>` and stubs the rest (no-op `status_tx`, dummy paths).
+  - **API layer:** `github::fetch_pr`, `set_viewed`, `post_thread`, etc.
+    currently build an `Octocrab` client per call. Refactor into a trait
+    (`trait GitHubClient { async fn fetch_pr(...); async fn post_thread(...); }`)
+    so a `MockGitHubClient` returning canned responses can be injected by
+    tests. The existing `Octocrab`-backed impl becomes one production impl.
+  - **Event simulation:** factor key handling out of `event_loop` into a
+    pure `apply_key(state, key)` function so tests can drive sequences like
+    `[KeyCode::Char('j'), KeyCode::Char('j'), KeyCode::Char('c')]` without
+    touching crossterm.
+
+  Scope-wise, the render + state + event layers are the cheapest wins and
+  enable snapshot tests of the file panel, diff layout, comment rendering,
+  and folder/thread toggle behaviour. The API trait is a bigger refactor —
+  defer until tests need to exercise GraphQL paths.
 
 ## Conventions
 
