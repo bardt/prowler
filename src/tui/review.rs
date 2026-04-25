@@ -1052,7 +1052,7 @@ fn render_files(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
                     Style::default()
                 };
                 let indent = "  ".repeat(row.depth);
-                ListItem::new(Line::from(vec![
+                let mut spans = vec![
                     Span::raw(indent),
                     Span::styled(marker, marker_style),
                     Span::raw(" "),
@@ -1061,7 +1061,22 @@ fn render_files(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
                     Span::styled(format!("+{}", d.added), Style::default().fg(Color::Green)),
                     Span::raw(" "),
                     Span::styled(format!("-{}", d.removed), Style::default().fg(Color::Red)),
-                ]))
+                ];
+                // Unresolved comment-thread count (resolved threads silently
+                // counted out so the badge tracks attention demand).
+                let unresolved = state
+                    .threads_by_file
+                    .get(*diff_idx)
+                    .map(|tt| tt.iter().filter(|t| !t.is_resolved).count())
+                    .unwrap_or(0);
+                if unresolved > 0 {
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(
+                        format!("\u{1F4AC}{unresolved}"),
+                        Style::default().fg(Color::Cyan),
+                    ));
+                }
+                ListItem::new(Line::from(spans))
             }
         })
         .collect();
@@ -1375,6 +1390,42 @@ mod tests {
             lines.push(line.trim_end().to_owned());
         }
         lines
+    }
+
+    #[test]
+    fn file_row_shows_unresolved_comment_count() {
+        let t = thread("T1", "a.rs", 1, "needs work");
+        let mut s = state(&["a.rs", "b.rs"], vec![t]);
+        let lines = render_to_lines(&mut s, 60, 12);
+        // Find the row that contains a.rs's filename. Wide emoji + `1` may
+        // render with a filler cell between, so just assert both are present.
+        let a_row = lines
+            .iter()
+            .find(|l| l.contains("a.rs"))
+            .expect("a.rs row not found");
+        assert!(
+            a_row.contains("\u{1F4AC}") && a_row.contains('1'),
+            "a.rs row should include the speech-bubble badge and `1`: {a_row:?}"
+        );
+        let b_row = lines
+            .iter()
+            .find(|l| l.contains("b.rs"))
+            .expect("b.rs row not found");
+        assert!(
+            !b_row.contains("\u{1F4AC}"),
+            "b.rs has no threads — no badge expected: {b_row:?}"
+        );
+    }
+
+    #[test]
+    fn file_row_omits_count_when_no_threads() {
+        let mut s = state(&["a.rs"], vec![]);
+        let lines = render_to_lines(&mut s, 60, 12);
+        let joined = lines.join("\n");
+        assert!(
+            !joined.contains("\u{1F4AC}"),
+            "no threads → no badge"
+        );
     }
 
     #[test]
