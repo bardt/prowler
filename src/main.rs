@@ -63,6 +63,8 @@ async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
 
     let token = auth::resolve_token().context("could not resolve a GitHub token")?;
     let meta = github::fetch_pr(&token, &owner, &repo_name, pr_number).await?;
+    let raw_comments = github::fetch_comments(&token, &owner, &repo_name, pr_number).await?;
+    let threads = github::group_threads(raw_comments);
 
     let desired_path = git::worktree_path(&repo_name, pr_number, &meta.head_sha);
     let base_path = git::base_worktree_path(&repo_name, pr_number, &meta.base_sha);
@@ -111,7 +113,7 @@ async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    tui::run(meta, diffs, session, repo_root, token)
+    tui::run(meta, diffs, threads, session, repo_root, token)
 }
 
 fn do_cleanup(repo_root: &std::path::Path, pr_number: u64) -> Result<()> {

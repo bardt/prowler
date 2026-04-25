@@ -9,19 +9,28 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::diff::FileDiff;
-use crate::github::PrMetadata;
+use crate::github::{CommentThread, PrMetadata};
 use crate::session::Session;
 use crate::tui::diff_view::Side;
 
 pub fn run(
     meta: PrMetadata,
     diffs: Vec<FileDiff>,
+    threads: Vec<CommentThread>,
     session: Session,
     repo_root: PathBuf,
     token: String,
 ) -> Result<()> {
     let mut terminal = ratatui::init();
-    let result = event_loop(&mut terminal, meta, diffs, session, repo_root, token);
+    let result = event_loop(
+        &mut terminal,
+        meta,
+        diffs,
+        threads,
+        session,
+        repo_root,
+        token,
+    );
     ratatui::restore();
     result
 }
@@ -30,11 +39,13 @@ fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     meta: PrMetadata,
     diffs: Vec<FileDiff>,
+    threads: Vec<CommentThread>,
     session: Session,
     repo_root: PathBuf,
     token: String,
 ) -> Result<()> {
-    let mut state = review::ReviewState::new(meta, diffs, session, repo_root, token);
+    let mut state =
+        review::ReviewState::new(meta, diffs, threads, session, repo_root, token);
 
     loop {
         terminal

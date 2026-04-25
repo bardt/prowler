@@ -5,6 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::diff::{DiffLine, FileDiff};
+use crate::github::{CommentSide, CommentThread};
 use crate::tui::syntax;
 
 const BG_ADDED: Color = Color::Rgb(20, 50, 25);
@@ -19,6 +20,13 @@ pub enum Cell {
     Added(String),
     Removed(String),
     Moved(String),
+    /// Header line of a comment within a thread: `┌ @author 2026-04-20 14:30`
+    /// (`├` for replies). The bool is true for the root, false for replies.
+    CommentHeader(String, bool),
+    /// Body line of a comment: `│ {text}`.
+    CommentBody(String),
+    /// Thread terminator: `└`.
+    CommentEnd,
 }
 
 #[derive(Clone)]
@@ -35,7 +43,7 @@ pub struct LaidOutDiff {
 }
 
 impl LaidOutDiff {
-    pub fn from_file(file: &FileDiff) -> Self {
+    pub fn from_file(file: &FileDiff, threads: &[CommentThread]) -> Self {
         let mut rows = Vec::new();
         let mut hunk_starts = Vec::new();
 
@@ -62,6 +70,7 @@ impl LaidOutDiff {
                             base_line: Some(old_line),
                             head_line: Some(new_line),
                         });
+                        attach_threads(&mut rows, threads, Some(old_line), Some(new_line));
                         old_line += 1;
                         new_line += 1;
                         i += 1;
@@ -73,6 +82,7 @@ impl LaidOutDiff {
                             base_line: Some(old_line),
                             head_line: Some(new_line),
                         });
+                        attach_threads(&mut rows, threads, Some(old_line), Some(new_line));
                         old_line += 1;
                         new_line += 1;
                         i += 1;
@@ -106,6 +116,7 @@ impl LaidOutDiff {
                                 base_line,
                                 head_line,
                             });
+                            attach_threads(&mut rows, threads, base_line, head_line);
                         }
                     }
                 }
@@ -114,6 +125,54 @@ impl LaidOutDiff {
 
         Self { rows, hunk_starts }
     }
+}
+
+/// After pushing a content row, append any comment threads whose anchor matches
+/// either side's line number on this row.
+fn attach_threads(
+    rows: &mut Vec<Row>,
+    threads: &[CommentThread],
+    base_line: Option<u32>,
+    head_line: Option<u32>,
+) {
+    for thread in threads {
+        let matches = match thread.side {
+            CommentSide::Base => base_line == Some(thread.line),
+            CommentSide::Head => head_line == Some(thread.line),
+        };
+        if !matches {
+            continue;
+        }
+        for (idx, comment) in thread.comments.iter().enumerate() {
+            let header = format!("@{} {}", comment.author, comment.created_at);
+            push_comment_row(rows, thread.side, Cell::CommentHeader(header, idx == 0));
+            for body_line in comment.body.lines() {
+                push_comment_row(
+                    rows,
+                    thread.side,
+                    Cell::CommentBody(body_line.to_owned()),
+                );
+            }
+            // Empty body still gets a `│` line so the thread structure is visible.
+            if comment.body.is_empty() {
+                push_comment_row(rows, thread.side, Cell::CommentBody(String::new()));
+            }
+        }
+        push_comment_row(rows, thread.side, Cell::CommentEnd);
+    }
+}
+
+fn push_comment_row(rows: &mut Vec<Row>, side: CommentSide, cell: Cell) {
+    let (base, head) = match side {
+        CommentSide::Base => (cell, Cell::Empty),
+        CommentSide::Head => (Cell::Empty, cell),
+    };
+    rows.push(Row {
+        base,
+        head,
+        base_line: None,
+        head_line: None,
+    });
 }
 
 /// Parse `@@ -10,5 +12,7 @@` → `(10, 12)`.
@@ -213,6 +272,29 @@ fn render_cell<'a>(cell: &'a Cell, syntax: &syntect::parsing::SyntaxReference) -
         Cell::Added(t) => row_with_marker("+ ", t, BG_ADDED, syntax),
         Cell::Removed(t) => row_with_marker("- ", t, BG_REMOVED, syntax),
         Cell::Moved(t) => row_with_marker("~ ", t, BG_MOVED, syntax),
+        Cell::CommentHeader(text, is_root) => {
+            let lead = if *is_root { "\u{250C} " } else { "\u{251C} " };
+            Line::from(vec![
+                Span::styled(
+                    lead,
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::styled(
+                    text.clone(),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ])
+        }
+        Cell::CommentBody(text) => Line::from(vec![
+            Span::styled("\u{2502} ", Style::default().fg(Color::Yellow)),
+            Span::styled(text.clone(), Style::default()),
+        ]),
+        Cell::CommentEnd => Line::from(Span::styled(
+            "\u{2514}",
+            Style::default().fg(Color::Yellow),
+        )),
     }
 }
 

@@ -120,7 +120,7 @@ Toggle local panel with `L`.
 
 ## Current milestone
 
-**M8 — Inline comments (read)**
+**M9 — Inline comments (post)**
 
 ## Milestones overview
 
@@ -133,8 +133,8 @@ Toggle local panel with `L`.
 | M5 | Diff rendering | ✅ |
 | M6 | Editor handoff | ✅ |
 | M7 | Viewed state + session persistence | ✅ |
-| M8 | Inline comments (read) | 🔲 next |
-| M9 | Inline comments (post) | 🔲 |
+| M8 | Inline comments (read) | ✅ |
+| M9 | Inline comments (post) | 🔲 next |
 | M10 | Local diff panel | 🔲 |
 | M11 | Dashboard | 🔲 |
 
@@ -151,6 +151,16 @@ new milestone.
   Note: `DISMISSED` means GitHub auto-cleared a viewed mark because the head changed —
   we'll likely want to surface that distinctly in the UI rather than treating it as
   Unviewed.
+- **Render outdated comments.** `fetch_comments` drops comments whose `line` is null
+  (GitHub marks them outdated when the head moves). They're still meaningful — show
+  them somewhere (file-level pinned panel, or anchored to the original line on the
+  base side) rather than silently discarding.
+- **Wrap long comment bodies.** Comment body lines are rendered verbatim and overflow
+  the pane width. Hard-wrap at the pane width (or use ratatui's `Wrap`) — needs a
+  layout pass that knows the pane width.
+- **Collapse/expand threads.** Spec calls for `Enter` to toggle a thread; today every
+  thread is fully expanded. Add per-thread collapsed state, default to collapsed
+  (one-line summary), expand the thread under the cursor on `Enter`.
 
 ## Conventions
 

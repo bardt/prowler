@@ -7,7 +7,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use std::path::{Path, PathBuf};
 
 use crate::diff::FileDiff;
-use crate::github::PrMetadata;
+use crate::github::{CommentThread, PrMetadata};
 use crate::session::{FileStatus, Session};
 use crate::tui::diff_view::{LaidOutDiff, Side, render_pane};
 
@@ -43,11 +43,22 @@ impl ReviewState {
     pub fn new(
         meta: PrMetadata,
         diffs: Vec<FileDiff>,
+        threads: Vec<CommentThread>,
         session: Session,
         repo_root: PathBuf,
         token: String,
     ) -> Self {
-        let laid = diffs.iter().map(LaidOutDiff::from_file).collect();
+        let mut threads_by_file: Vec<Vec<CommentThread>> = vec![Vec::new(); diffs.len()];
+        for thread in threads {
+            if let Some(idx) = diffs.iter().position(|d| d.path == thread.path) {
+                threads_by_file[idx].push(thread);
+            }
+        }
+        let laid: Vec<LaidOutDiff> = diffs
+            .iter()
+            .zip(&threads_by_file)
+            .map(|(d, t)| LaidOutDiff::from_file(d, t))
+            .collect();
         let scroll = vec![0; diffs.len()];
         let cursor = vec![0; diffs.len()];
         let mut list_state = ListState::default();
