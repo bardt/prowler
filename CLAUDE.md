@@ -120,7 +120,7 @@ Toggle local panel with `L`.
 
 ## Current milestone
 
-**M10 — Submit review**
+**M11 — Local diff panel**
 
 ## Milestones overview
 
@@ -135,8 +135,8 @@ Toggle local panel with `L`.
 | M7 | Viewed state + session persistence | ✅ |
 | M8 | Inline comments (read) | ✅ |
 | M9 | Inline comments (post) | ✅ |
-| M10 | Submit review | 🔲 next |
-| M11 | Local diff panel | 🔲 |
+| M10 | Submit review | ✅ |
+| M11 | Local diff panel | 🔲 next |
 | M12 | Dashboard | 🔲 |
 
 **M10 scope:** A panel listing all comments in the current pending review, with a verdict
@@ -167,10 +167,18 @@ new milestone.
 - **Collapse/expand threads.** Spec calls for `Enter` to toggle a thread; today every
   thread is fully expanded. Add per-thread collapsed state, default to collapsed
   (one-line summary), expand the thread under the cursor on `Enter`.
-- **Status feedback for posts.** `c` / `r` post silently — no UI confirmation, errors
-  only appear in `/tmp/prowler-sync.log`. Add a transient status line at the bottom
-  of the TUI (e.g., "Posted ✓" / "Post failed: ...") that auto-clears after a few
-  redraws.
+- **Status feedback for synchronous posts (`c`, `r`, `e`, `E`).** Add `status:
+  Option<Status>` to `ReviewState` with `{ text, kind: Success | Error | Info,
+  expires_at: Instant }`. Render in the bottom row, replacing the hotkey footer
+  while active. Auto-clear is free — the event loop already redraws every 250ms
+  via the `event::poll` timeout, so checking `Instant::now() >= expires_at` on
+  each draw works without extra plumbing. Wire `set_status()` calls at the end
+  of `post_comment` / `reply_to_comment` / `open_in_editor`.
+- **Status feedback for async syncs (`v`, `s`).** Viewed-state sync uses
+  `tokio::spawn` fire-and-forget — errors only land in `/tmp/prowler-sync.log`.
+  To surface them in the UI, add an `mpsc::UnboundedSender<StatusMessage>` to
+  the spawned task and drain it from the event loop on each tick. Lower
+  priority than the sync-post variant since it's lossier and rarer.
 - **Cross-file comment navigation.** Add `gN` / `gP` (or similar) to jump to the
   next/prev comment thread across the whole PR — selects the file, scrolls cursor
   to the thread anchor. Today `]` / `[` only navigate hunks within the current file.

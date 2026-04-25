@@ -88,6 +88,7 @@ fn event_loop(
             KeyCode::Char('s') => state.toggle_skipped(),
             KeyCode::Char('c') => post_comment(terminal, &mut state)?,
             KeyCode::Char('r') => reply_to_comment(terminal, &mut state)?,
+            KeyCode::Char('S') => submit_review(terminal, &mut state)?,
             _ => {}
         }
     }
@@ -151,7 +152,7 @@ fn post_comment(
     });
 
     match result {
-        Ok((_meta, threads)) => state.set_threads(threads),
+        Ok((meta, threads)) => state.apply_refresh(meta, threads),
         Err(e) => log_post_error(&format!(
             "[FAIL] PR #{pr_number} {path}:{line} {side_label}: {e:#}\n"
         )),
@@ -191,12 +192,112 @@ fn reply_to_comment(
     });
 
     match result {
-        Ok((_meta, threads)) => state.set_threads(threads),
+        Ok((meta, threads)) => state.apply_refresh(meta, threads),
         Err(e) => log_post_error(&format!(
             "[FAIL] reply PR #{pr_number} thread {thread_id}: {e:#}\n"
         )),
     }
     Ok(())
+}
+
+fn submit_review(
+    terminal: &mut ratatui::DefaultTerminal,
+    state: &mut review::ReviewState,
+) -> Result<()> {
+    let pending_id = state.pending_review_id().map(|s| s.to_owned());
+    let pending_count = state.pending_comment_count();
+    let pr_node_id = state.pr_node_id().to_owned();
+    let pr_number = state.pr_number();
+
+    let pending_summary = if pending_id.is_some() {
+        format!(
+            "# {pending_count} pending comment(s) will be published as part of this review."
+        )
+    } else {
+        "# No pending review found — this will create a fresh, verdict-only review.".to_owned()
+    };
+
+    let prompt = format!(
+        "# Submit review for PR #{pr_number}.\n\
+         #\n\
+         # First non-comment line: verdict — one of APPROVE, COMMENT, REQUEST_CHANGES.\n\
+         # Lines after that: optional summary body.\n\
+         {pending_summary}\n\
+         #\n\
+         # Save and exit to submit; abort the editor (e.g. `:cq`) to cancel.\n\
+         \n\
+         COMMENT\n\
+         \n"
+    );
+
+    ratatui::restore();
+    let body = editor::compose(&prompt);
+    *terminal = ratatui::init();
+    terminal.clear().ok();
+
+    let buffer = match body {
+        Ok(b) if !b.is_empty() => b,
+        Ok(_) | Err(_) => return Ok(()),
+    };
+
+    let (event, body) = match parse_submit_buffer(&buffer) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            log_post_error(&format!(
+                "[FAIL] submit PR #{pr_number}: invalid buffer — {e:#}\n"
+            ));
+            return Ok(());
+        }
+    };
+
+    let token = state.token.clone();
+    let owner = state.owner.clone();
+    let repo = state.repo.clone();
+
+    let result = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            crate::github::submit_review(
+                &token,
+                &pr_node_id,
+                pending_id.as_deref(),
+                &event,
+                &body,
+            )
+            .await?;
+            crate::github::fetch_pr(&token, &owner, &repo, pr_number).await
+        })
+    });
+
+    match result {
+        Ok((meta, threads)) => state.apply_refresh(meta, threads),
+        Err(e) => log_post_error(&format!("[FAIL] submit PR #{pr_number}: {e:#}\n")),
+    }
+    Ok(())
+}
+
+/// Parse a submit-review compose buffer into `(event, body)`.
+/// Strips `#` lines, takes the first non-empty remaining line as the verdict,
+/// and joins the rest as the body.
+fn parse_submit_buffer(text: &str) -> Result<(String, String)> {
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect();
+    let mut iter = lines.iter().skip_while(|l| l.trim().is_empty());
+    let verdict_line = iter
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing verdict line"))?;
+    let verdict = verdict_line.trim().to_uppercase();
+    if !matches!(
+        verdict.as_str(),
+        "APPROVE" | "COMMENT" | "REQUEST_CHANGES"
+    ) {
+        anyhow::bail!(
+            "invalid verdict `{verdict}` — expected APPROVE, COMMENT, or REQUEST_CHANGES"
+        );
+    }
+    let body = iter.copied().collect::<Vec<_>>().join("\n").trim().to_owned();
+    Ok((verdict, body))
 }
 
 fn log_post_error(line: &str) {

@@ -109,6 +109,13 @@ impl ReviewState {
         }
     }
 
+    /// Replace metadata + threads after a refetch and rebuild the laid-out diff.
+    /// Cursor / scroll preserved by row index.
+    pub fn apply_refresh(&mut self, meta: PrMetadata, threads: Vec<CommentThread>) {
+        self.meta = meta;
+        self.set_threads(threads);
+    }
+
     /// Replace threads and rebuild the laid-out diff. Cursor and scroll offsets are
     /// preserved by row index, but the rows underneath may have shifted (a new
     /// comment thread inserts rows). That's acceptable — the cursor row identity
@@ -134,6 +141,30 @@ impl ReviewState {
 
     pub fn pr_node_id(&self) -> &str {
         &self.meta.node_id
+    }
+
+    pub fn pending_review_id(&self) -> Option<&str> {
+        self.meta.pending_review_id.as_deref()
+    }
+
+    /// How many of the visible (non-outdated) comments belong to a pending review.
+    pub fn pending_comment_count(&self) -> usize {
+        self.laid
+            .iter()
+            .flat_map(|laid| laid.rows.iter())
+            .filter_map(|row| match (&row.base, &row.head) {
+                (
+                    crate::tui::diff_view::Cell::CommentHeader { is_pending, .. },
+                    _,
+                )
+                | (
+                    _,
+                    crate::tui::diff_view::Cell::CommentHeader { is_pending, .. },
+                ) => Some(*is_pending),
+                _ => None,
+            })
+            .filter(|p| *p)
+            .count()
     }
 
     fn file_status(&self, path: &str) -> FileStatus {
@@ -491,6 +522,8 @@ fn render_hotkeys(frame: &mut Frame, area: Rect) {
         Span::raw(" view/skip  "),
         key("c/r"),
         Span::raw(" comment/reply  "),
+        key("S"),
+        Span::raw(" submit review  "),
         key("q"),
         Span::raw(" quit"),
     ]);

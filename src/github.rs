@@ -18,6 +18,9 @@ pub struct PrMetadata {
     pub head_branch: String,
     pub head_sha: String,
     pub files: Vec<PrFile>,
+    /// ID of the viewer's currently pending review on this PR, if any. Set by
+    /// `fetch_pr` and used by `submit_review` to publish draft comments.
+    pub pending_review_id: Option<String>,
 }
 
 impl PrMetadata {
@@ -84,11 +87,20 @@ pub async fn fetch_pr(
     .await
     .with_context(|| format!("failed to fetch PR #{pr_number} from {owner}/{repo}"))?;
 
-    let pr = response
-        .into_data()?
+    let data = response.into_data()?;
+    let viewer_login = data.viewer.login.clone();
+    let pr = data
         .repository
         .pull_request
         .context("GraphQL returned null pullRequest")?;
+
+    let pending_review_id = pr.reviews.nodes.iter().find_map(|r| {
+        if r.author.as_ref().map(|a| a.login.as_str()) == Some(viewer_login.as_str()) {
+            Some(r.id.clone())
+        } else {
+            None
+        }
+    });
 
     let mut gql_files = pr.files.nodes;
     let mut files_page = pr.files.page_info;
@@ -166,6 +178,7 @@ pub async fn fetch_pr(
         head_branch: pr.head_ref_name,
         head_sha: pr.head_ref_oid,
         files,
+        pending_review_id,
     };
 
     let threads = gql_threads
@@ -259,6 +272,62 @@ mutation($pid: ID!, $path: String!, $line: Int!, $side: DiffSide!, $body: String
 
     if let Some(errors) = response.get("errors") {
         bail!("addPullRequestReviewThread for `{path}:{line}`: {errors}");
+    }
+    Ok(())
+}
+
+/// Submit (publish) a review with a verdict and optional summary body.
+///
+/// If `pending_review_id` is `Some`, this submits the existing pending review,
+/// publishing all of its draft comments. If `None`, a fresh review is created and
+/// submitted in one shot via `addPullRequestReview` (verdict-only, no comments).
+pub async fn submit_review(
+    token: &str,
+    pr_node_id: &str,
+    pending_review_id: Option<&str>,
+    event: &str,
+    body: &str,
+) -> Result<()> {
+    let octocrab = Octocrab::builder()
+        .personal_token(token.to_owned())
+        .build()
+        .context("failed to build GitHub client")?;
+
+    let body_var = if body.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::String(body.to_owned())
+    };
+
+    let payload = if let Some(review_id) = pending_review_id {
+        serde_json::json!({
+            "query": r#"
+mutation($rid: ID!, $event: PullRequestReviewEvent!, $body: String) {
+  submitPullRequestReview(input: { pullRequestReviewId: $rid, event: $event, body: $body }) {
+    pullRequestReview { id state }
+  }
+}"#,
+            "variables": { "rid": review_id, "event": event, "body": body_var },
+        })
+    } else {
+        serde_json::json!({
+            "query": r#"
+mutation($pid: ID!, $event: PullRequestReviewEvent!, $body: String) {
+  addPullRequestReview(input: { pullRequestId: $pid, event: $event, body: $body }) {
+    pullRequestReview { id state }
+  }
+}"#,
+            "variables": { "pid": pr_node_id, "event": event, "body": body_var },
+        })
+    };
+
+    let response: serde_json::Value = octocrab
+        .graphql(&payload)
+        .await
+        .context("submit_review GraphQL request failed")?;
+
+    if let Some(errors) = response.get("errors") {
+        bail!("submit_review: {errors}");
     }
     Ok(())
 }
@@ -385,7 +454,13 @@ impl<T> GqlResponse<T> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PrQueryData {
+    viewer: GqlViewer,
     repository: GqlRepo,
+}
+
+#[derive(Deserialize)]
+struct GqlViewer {
+    login: String,
 }
 
 #[derive(Deserialize)]
@@ -403,8 +478,20 @@ struct GqlPullRequest {
     base_ref_oid: String,
     head_ref_name: String,
     head_ref_oid: String,
+    reviews: GqlReviewsConn,
     files: GqlFilesConn,
     review_threads: GqlThreadsConn,
+}
+
+#[derive(Deserialize)]
+struct GqlReviewsConn {
+    nodes: Vec<GqlReview>,
+}
+
+#[derive(Deserialize)]
+struct GqlReview {
+    id: String,
+    author: Option<GqlActor>,
 }
 
 #[derive(Deserialize)]
@@ -514,6 +601,7 @@ struct ThreadsPagePr {
 
 const PR_QUERY: &str = r#"
 query($owner: String!, $name: String!, $number: Int!) {
+  viewer { login }
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       id
@@ -522,6 +610,9 @@ query($owner: String!, $name: String!, $number: Int!) {
       baseRefOid
       headRefName
       headRefOid
+      reviews(states: [PENDING], first: 10) {
+        nodes { id author { login } }
+      }
       files(first: 100) {
         nodes { path additions deletions changeType viewerViewedState }
         pageInfo { hasNextPage endCursor }
