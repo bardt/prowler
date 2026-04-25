@@ -43,6 +43,35 @@ pub fn fetch_pr_head(repo_root: &Path, pr_number: u64) -> Result<()> {
     Ok(())
 }
 
+/// Ensure a commit SHA is locally available, fetching it from origin if needed.
+pub fn ensure_sha(repo_root: &Path, sha: &str) -> Result<()> {
+    let exists = Command::new("git")
+        .args([
+            "-C",
+            &repo_root.to_string_lossy(),
+            "cat-file",
+            "-e",
+            &format!("{sha}^{{commit}}"),
+        ])
+        .status()
+        .context("failed to run `git cat-file`")?;
+    if exists.success() {
+        return Ok(());
+    }
+
+    let output = Command::new("git")
+        .args(["-C", &repo_root.to_string_lossy(), "fetch", "origin", sha])
+        .output()
+        .context("failed to run `git fetch` for base SHA")?;
+    if !output.status.success() {
+        bail!(
+            "`git fetch origin {sha}` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
 /// Local ref written by `fetch_pr_head`.
 pub fn pr_local_ref(pr_number: u64) -> String {
     format!("refs/prowler/pr/{pr_number}")

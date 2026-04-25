@@ -101,6 +101,7 @@ async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
         .save(&repo_root)?;
     }
 
+    git::ensure_sha(&repo_root, &meta.base_sha)?;
     let diffs = diff::compute_diffs(&repo_root, &desired_path, &meta.base_sha, &meta.files)?;
 
     if json {

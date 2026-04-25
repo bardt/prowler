@@ -1,4 +1,6 @@
+mod diff_view;
 mod review;
+mod syntax;
 
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -40,9 +42,11 @@ fn event_loop(
 
         match key.code {
             KeyCode::Char('q') => return Ok(()),
-            KeyCode::Char('j') | KeyCode::Down => state.next_file(),
-            KeyCode::Char('k') | KeyCode::Up => state.prev_file(),
             KeyCode::Tab => state.cycle_focus(),
+            KeyCode::Char('j') | KeyCode::Down => state.move_down(),
+            KeyCode::Char('k') | KeyCode::Up => state.move_up(),
+            KeyCode::Char(']') => state.next_hunk(),
+            KeyCode::Char('[') => state.prev_hunk(),
             _ => {}
         }
     }

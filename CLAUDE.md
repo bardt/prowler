@@ -120,7 +120,7 @@ Toggle local panel with `L`.
 
 ## Current milestone
 
-**M5 — Diff rendering**
+**M6 — Editor handoff**
 
 ## Milestones overview
 
@@ -130,7 +130,8 @@ Toggle local panel with `L`.
 | M2 | Worktree lifecycle | ✅ |
 | M3 | Diff data model | ✅ |
 | M4 | Basic TUI shell | ✅ |
-| M5 | Diff rendering | 🔲 next |
+| M5 | Diff rendering | ✅ |
+| M6 | Editor handoff | 🔲 next |
 | M5 | Diff rendering | 🔲 |
 | M6 | Editor handoff | 🔲 |
 | M7 | Viewed state + session persistence | 🔲 |

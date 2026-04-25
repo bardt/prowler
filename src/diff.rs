@@ -46,8 +46,16 @@ fn diff_file(
     file: &crate::github::PrFile,
 ) -> Result<FileDiff> {
     let base_path = file.previous_path.as_deref().unwrap_or(&file.path);
-    let base_content = base_content(repo_root, base_sha, base_path)?;
-    let head_content = head_content(worktree_path, &file.path)?;
+    let base_content = if file.status == "added" {
+        String::new()
+    } else {
+        base_content(repo_root, base_sha, base_path)?
+    };
+    let head_content = if file.status == "removed" {
+        String::new()
+    } else {
+        head_content(worktree_path, &file.path)?
+    };
     Ok(diff_texts(&file.path, &base_content, &head_content))
 }
 
@@ -62,7 +70,10 @@ fn base_content(repo_root: &Path, base_sha: &str, path: &str) -> Result<String> 
         .output()
         .context("failed to run `git show`")?;
     if !output.status.success() {
-        return Ok(String::new()); // added file — no base content
+        anyhow::bail!(
+            "`git show {base_sha}:{path}` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
@@ -70,7 +81,7 @@ fn base_content(repo_root: &Path, base_sha: &str, path: &str) -> Result<String> 
 fn head_content(worktree_path: &Path, path: &str) -> Result<String> {
     let file_path = worktree_path.join(path);
     if !file_path.exists() {
-        return Ok(String::new()); // deleted file — no head content
+        return Ok(String::new());
     }
     std::fs::read_to_string(&file_path)
         .with_context(|| format!("failed to read {}", file_path.display()))
