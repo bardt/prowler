@@ -85,6 +85,10 @@ pub struct ReviewState {
     local_diffs: Vec<Option<FileDiff>>,
     /// Viewport scroll offset for the LOCAL pane, per file.
     local_scroll: Vec<u16>,
+    /// When true, the body area is replaced by a full-width description page
+    /// (PR body + top-level conversation). Toggled with `?`.
+    show_description: bool,
+    description_scroll: u16,
 }
 
 /// Default wrap width used before we've measured the actual pane (e.g. on first paint).
@@ -170,7 +174,15 @@ impl ReviewState {
             local_panel: false,
             local_diffs: (0..n).map(|_| None).collect(),
             local_scroll: vec![0; n],
+            show_description: false,
+            description_scroll: 0,
         }
+    }
+
+    /// Toggle the full-width PR description / conversation page.
+    pub fn toggle_description(&mut self) {
+        self.show_description = !self.show_description;
+        self.description_scroll = 0;
     }
 
     /// Re-lay-out diffs with a new wrap width. Called by `render_body` when the
@@ -562,6 +574,10 @@ impl ReviewState {
     }
 
     pub fn move_down(&mut self) {
+        if self.show_description {
+            self.description_scroll = self.description_scroll.saturating_add(1);
+            return;
+        }
         match self.focus {
             Focus::Files => self.next_file(),
             Focus::Base | Focus::Head => self.move_cursor(1),
@@ -570,6 +586,10 @@ impl ReviewState {
     }
 
     pub fn move_up(&mut self) {
+        if self.show_description {
+            self.description_scroll = self.description_scroll.saturating_sub(1);
+            return;
+        }
         match self.focus {
             Focus::Files => self.prev_file(),
             Focus::Base | Focus::Head => self.move_cursor(-1),
@@ -791,6 +811,7 @@ pub fn apply_key(state: &mut ReviewState, key: KeyCode) -> bool {
         }
         KeyCode::Char('L') => state.toggle_local_panel(),
         KeyCode::Char('R') => state.refresh_local(),
+        KeyCode::Char('?') => state.toggle_description(),
         KeyCode::Char('j') | KeyCode::Down => state.move_down(),
         KeyCode::Char('k') | KeyCode::Up => state.move_up(),
         KeyCode::Char(']') => state.next_hunk(),
@@ -823,8 +844,77 @@ pub fn render(frame: &mut Frame, state: &mut ReviewState) {
         .split(frame.area());
 
     render_header(frame, outer[0], state);
-    render_body(frame, outer[1], state);
+    if state.show_description {
+        render_description(frame, outer[1], state);
+    } else {
+        render_body(frame, outer[1], state);
+    }
     render_footer(frame, outer[2], state);
+}
+
+fn render_description(frame: &mut Frame, area: Rect, state: &ReviewState) {
+    let mut spans_lines: Vec<Line> = Vec::new();
+
+    // PR description
+    spans_lines.push(Line::styled(
+        "## Description",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans_lines.push(Line::raw(""));
+    if state.meta.body.is_empty() {
+        spans_lines.push(Line::styled(
+            "(no description)",
+            Style::default().fg(Color::DarkGray),
+        ));
+    } else {
+        for line in state.meta.body.lines() {
+            spans_lines.push(Line::raw(line.to_owned()));
+        }
+    }
+    spans_lines.push(Line::raw(""));
+
+    // Conversation
+    spans_lines.push(Line::styled(
+        format!("## Conversation ({})", state.meta.conversation.len()),
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans_lines.push(Line::raw(""));
+    if state.meta.conversation.is_empty() {
+        spans_lines.push(Line::styled(
+            "(no top-level comments)",
+            Style::default().fg(Color::DarkGray),
+        ));
+    } else {
+        for c in &state.meta.conversation {
+            spans_lines.push(Line::from(vec![
+                Span::styled(
+                    format!("@{}", c.author),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::styled(c.created_at.clone(), Style::default().fg(Color::DarkGray)),
+            ]));
+            for line in c.body.lines() {
+                spans_lines.push(Line::raw(format!("  {line}")));
+            }
+            spans_lines.push(Line::raw(""));
+        }
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("DESCRIPTION  (?: close · j/k: scroll)")
+        .border_style(Style::default().fg(Color::Cyan));
+    let para = Paragraph::new(spans_lines)
+        .block(block)
+        .scroll((state.description_scroll, 0));
+    frame.render_widget(para, area);
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, state: &ReviewState) {
@@ -1227,6 +1317,8 @@ mod tests {
             pending_review_id: None,
             state: "OPEN".into(),
             is_draft: false,
+            body: String::new(),
+            conversation: Vec::new(),
         }
     }
 
@@ -1448,6 +1540,31 @@ mod tests {
             "header should include the state badge: {:?}",
             lines[0]
         );
+    }
+
+    #[test]
+    fn question_mark_toggles_description_panel() {
+        let mut s = state(&["a.rs"], vec![]);
+        // Stuff a body and a conversation comment so the page has content.
+        s.meta.body = "Hello body line one.\nLine two.".into();
+        s.meta.conversation.push(crate::github::ConversationComment {
+            author: "alice".into(),
+            body: "lgtm".into(),
+            created_at: "2026-04-26 10:00".into(),
+        });
+        assert!(!s.show_description);
+        apply_key(&mut s, KeyCode::Char('?'));
+        assert!(s.show_description);
+
+        let lines = render_to_lines(&mut s, 100, 20);
+        let joined = lines.join("\n");
+        assert!(joined.contains("Description"));
+        assert!(joined.contains("Hello body line one"));
+        assert!(joined.contains("Conversation"));
+        assert!(joined.contains("@alice"));
+
+        apply_key(&mut s, KeyCode::Char('?'));
+        assert!(!s.show_description);
     }
 
     #[test]

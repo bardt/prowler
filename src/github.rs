@@ -29,6 +29,19 @@ pub struct PrMetadata {
     /// True when the PR is a draft. Cross-cuts with `state == OPEN` —
     /// drafts render as DRAFT instead of OPEN.
     pub is_draft: bool,
+    /// PR description (markdown source). Rendered as plain text in the
+    /// description panel.
+    pub body: String,
+    /// Issue-level (non-inline) comments on the PR, in posting order.
+    pub conversation: Vec<ConversationComment>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConversationComment {
+    pub author: String,
+    pub body: String,
+    /// Pre-formatted "YYYY-MM-DD HH:MM".
+    pub created_at: String,
 }
 
 impl PrMetadata {
@@ -178,6 +191,20 @@ pub async fn fetch_pr(
         })
         .collect();
 
+    let conversation = pr
+        .comments
+        .nodes
+        .into_iter()
+        .map(|c| ConversationComment {
+            author: c
+                .author
+                .map(|a| a.login)
+                .unwrap_or_else(|| "unknown".to_string()),
+            body: c.body,
+            created_at: c.created_at.format("%Y-%m-%d %H:%M").to_string(),
+        })
+        .collect();
+
     let metadata = PrMetadata {
         pr_number,
         node_id: pr.id,
@@ -190,6 +217,8 @@ pub async fn fetch_pr(
         pending_review_id,
         state: pr.state,
         is_draft: pr.is_draft,
+        body: pr.body,
+        conversation,
     };
 
     let threads = gql_threads
@@ -490,13 +519,28 @@ struct GqlPullRequest {
     title: String,
     state: String,
     is_draft: bool,
+    body: String,
     base_ref_name: String,
     base_ref_oid: String,
     head_ref_name: String,
     head_ref_oid: String,
     reviews: GqlReviewsConn,
+    comments: GqlIssueCommentsConn,
     files: GqlFilesConn,
     review_threads: GqlThreadsConn,
+}
+
+#[derive(Deserialize)]
+struct GqlIssueCommentsConn {
+    nodes: Vec<GqlIssueComment>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlIssueComment {
+    author: Option<GqlActor>,
+    body: String,
+    created_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Deserialize)]
@@ -625,10 +669,14 @@ query($owner: String!, $name: String!, $number: Int!) {
       title
       state
       isDraft
+      body
       baseRefName
       baseRefOid
       headRefName
       headRefOid
+      comments(first: 100) {
+        nodes { author { login } body createdAt }
+      }
       reviews(states: [PENDING], first: 10) {
         nodes { id author { login } }
       }

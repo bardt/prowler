@@ -160,9 +160,6 @@ new milestone.
   and inject either the real `Octocrab`-backed impl or a `MockGitHubClient`
   returning canned responses. Test handlers like `post_comment` /
   `submit_review` then become drivable end-to-end.
-- **PR description + top-level conversation panel.** Add a panel that renders the PR
-  body and the issue-level (non-inline) conversation. Today only inline review comments
-  are visible inside the TUI.
 
 ## Conventions
 
