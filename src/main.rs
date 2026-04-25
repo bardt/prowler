@@ -1,4 +1,5 @@
 mod auth;
+mod diff;
 mod git;
 mod github;
 mod session;
@@ -24,6 +25,9 @@ enum Commands {
         /// Remove the worktree and session for this PR
         #[arg(long)]
         cleanup: bool,
+        /// Emit diff as JSON instead of setting up the worktree interactively
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -31,12 +35,12 @@ enum Commands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Review { pr, cleanup } => review(pr, cleanup).await?,
+        Commands::Review { pr, cleanup, json } => review(pr, cleanup, json).await?,
     }
     Ok(())
 }
 
-async fn review(pr_number: u64, cleanup: bool) -> Result<()> {
+async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
     let repo = Repository::discover(".")
         .context("not inside a git repository (could not find .git)")?;
 
@@ -59,52 +63,68 @@ async fn review(pr_number: u64, cleanup: bool) -> Result<()> {
     let token = auth::resolve_token().context("could not resolve a GitHub token")?;
     let meta = github::fetch_pr(&token, &owner, &repo_name, pr_number).await?;
 
-    println!("Title:      {}", meta.title);
-    println!("Base:       {}", meta.base_branch);
-    println!("Head SHA:   {}", meta.head_sha);
-    println!("Files:      {}", meta.file_count);
-
     let desired_path = git::worktree_path(&repo_name, pr_number, &meta.head_sha);
-
     let session = Session::load(&repo_root, pr_number)?;
 
-    if desired_path.exists() {
+    let reused = desired_path.exists();
+
+    if reused {
         if session.is_none() {
-            // Path exists but no session — save one so future runs track it.
             Session {
                 pr_number,
                 branch: meta.head_branch.clone(),
                 worktree_path: desired_path.clone(),
-                base_sha: meta.head_sha.clone(), // base SHA fetched in M3
+                base_sha: meta.base_sha.clone(),
                 head_sha: meta.head_sha.clone(),
             }
             .save(&repo_root)?;
         }
-        println!("Worktree:   {} (reused)", desired_path.display());
+    } else {
+        // Worktree doesn't exist — check if an old session points elsewhere (SHA changed).
+        if let Some(old) = &session {
+            if old.worktree_path.exists() {
+                // A different worktree exists for another SHA; leave it alone.
+            }
+        }
+
+        git::fetch_pr_head(&repo_root, pr_number)?;
+        git::add_worktree(&repo_root, &desired_path, &git::pr_local_ref(pr_number))?;
+
+        Session {
+            pr_number,
+            branch: meta.head_branch.clone(),
+            worktree_path: desired_path.clone(),
+            base_sha: meta.base_sha.clone(),
+            head_sha: meta.head_sha.clone(),
+        }
+        .save(&repo_root)?;
+    }
+
+    if json {
+        let diffs =
+            diff::compute_diffs(&repo_root, &desired_path, &meta.base_sha, &meta.files)?;
+        let output = serde_json::json!({
+            "pr_number": pr_number,
+            "title": meta.title,
+            "base_branch": meta.base_branch,
+            "base_sha": meta.base_sha,
+            "head_sha": meta.head_sha,
+            "files": diffs,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
         return Ok(());
     }
 
-    // Worktree doesn't exist — check if an old session points elsewhere (SHA changed).
-    if let Some(old) = &session {
-        if old.worktree_path.exists() {
-            // A different worktree exists for another SHA; leave it alone.
-            // git worktree prune will clean it up if the branch is gone.
-        }
-    }
+    println!("Title:      {}", meta.title);
+    println!("Base:       {}", meta.base_branch);
+    println!("Head SHA:   {}", meta.head_sha);
+    println!("Files:      {}", meta.file_count());
+    println!(
+        "Worktree:   {} ({})",
+        desired_path.display(),
+        if reused { "reused" } else { "created" }
+    );
 
-    git::fetch_pr_head(&repo_root, pr_number)?;
-    git::add_worktree(&repo_root, &desired_path, &git::pr_local_ref(pr_number))?;
-
-    Session {
-        pr_number,
-        branch: meta.head_branch,
-        worktree_path: desired_path.clone(),
-        base_sha: meta.head_sha.clone(),
-        head_sha: meta.head_sha,
-    }
-    .save(&repo_root)?;
-
-    println!("Worktree:   {} (created)", desired_path.display());
     Ok(())
 }
 
