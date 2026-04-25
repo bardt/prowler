@@ -5,6 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::diff::FileDiff;
 use crate::github::{CommentSide, CommentThread, PrMetadata};
@@ -18,6 +19,22 @@ pub enum Focus {
     Base,
     Head,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum StatusKind {
+    Success,
+    Error,
+    #[allow(dead_code)] // Reserved for future "in-progress" / informational notices.
+    Info,
+}
+
+pub struct Status {
+    pub text: String,
+    pub kind: StatusKind,
+    pub expires_at: Instant,
+}
+
+const STATUS_TTL: Duration = Duration::from_secs(3);
 
 pub struct ReviewState {
     pub meta: PrMetadata,
@@ -37,6 +54,7 @@ pub struct ReviewState {
     pub repo: String,
     file_tree: FileTree,
     visible_rows: Vec<VisibleRow>,
+    status: Option<Status>,
 }
 
 pub struct EditorTarget {
@@ -92,7 +110,22 @@ impl ReviewState {
             repo,
             file_tree,
             visible_rows,
+            status: None,
         }
+    }
+
+    pub fn set_status(&mut self, text: impl Into<String>, kind: StatusKind) {
+        self.status = Some(Status {
+            text: text.into(),
+            kind,
+            expires_at: Instant::now() + STATUS_TTL,
+        });
+    }
+
+    fn current_status(&self) -> Option<&Status> {
+        self.status
+            .as_ref()
+            .filter(|s| Instant::now() < s.expires_at)
     }
 
     /// Toggle collapse on the folder under the file-panel cursor.
@@ -242,7 +275,7 @@ impl ReviewState {
             .unwrap_or(FileStatus::Unviewed)
     }
 
-    fn set_status(&mut self, path: String, status: FileStatus) {
+    fn set_file_status(&mut self, path: String, status: FileStatus) {
         let was_viewed = self.file_status(&path) == FileStatus::Viewed;
         let now_viewed = status == FileStatus::Viewed;
 
@@ -288,7 +321,7 @@ impl ReviewState {
             FileStatus::Viewed => FileStatus::Unviewed,
             _ => FileStatus::Viewed,
         };
-        self.set_status(path, next);
+        self.set_file_status(path, next);
     }
 
     pub fn toggle_skipped(&mut self) {
@@ -298,7 +331,7 @@ impl ReviewState {
             FileStatus::Skipped => FileStatus::Unviewed,
             _ => FileStatus::Skipped,
         };
-        self.set_status(path, next);
+        self.set_file_status(path, next);
     }
 
     pub fn editor_target(&self, side: Side) -> Option<EditorTarget> {
@@ -471,7 +504,27 @@ pub fn render(frame: &mut Frame, state: &mut ReviewState) {
 
     render_header(frame, outer[0], state);
     render_body(frame, outer[1], state);
-    render_hotkeys(frame, outer[2], state);
+    render_footer(frame, outer[2], state);
+}
+
+fn render_footer(frame: &mut Frame, area: Rect, state: &ReviewState) {
+    if let Some(status) = state.current_status() {
+        let (prefix, color) = match status.kind {
+            StatusKind::Success => ("\u{2713} ", Color::Green),
+            StatusKind::Error => ("\u{2717} ", Color::Red),
+            StatusKind::Info => ("\u{2022} ", Color::Cyan),
+        };
+        let line = Line::from(vec![
+            Span::styled(
+                prefix,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(status.text.clone(), Style::default().fg(color)),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+    } else {
+        render_hotkeys(frame, area, state);
+    }
 }
 
 fn render_header(frame: &mut Frame, area: Rect, state: &ReviewState) {

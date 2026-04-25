@@ -83,8 +83,8 @@ fn event_loop(
             KeyCode::Char('k') | KeyCode::Up => state.move_up(),
             KeyCode::Char(']') => state.next_hunk(),
             KeyCode::Char('[') => state.prev_hunk(),
-            KeyCode::Char('e') => open_in_editor(terminal, &state, Side::Head)?,
-            KeyCode::Char('E') => open_in_editor(terminal, &state, Side::Base)?,
+            KeyCode::Char('e') => open_in_editor(terminal, &mut state, Side::Head)?,
+            KeyCode::Char('E') => open_in_editor(terminal, &mut state, Side::Base)?,
             KeyCode::Char('v') => state.toggle_viewed(),
             KeyCode::Char('s') => state.toggle_skipped(),
             KeyCode::Char('c') => post_comment(terminal, &mut state)?,
@@ -98,7 +98,7 @@ fn event_loop(
 
 fn open_in_editor(
     terminal: &mut ratatui::DefaultTerminal,
-    state: &review::ReviewState,
+    state: &mut review::ReviewState,
     side: Side,
 ) -> Result<()> {
     let Some(target) = state.editor_target(side) else {
@@ -108,7 +108,10 @@ fn open_in_editor(
     let result = editor::open(&target.file, target.line);
     *terminal = ratatui::init();
     terminal.clear().ok();
-    result
+    if let Err(e) = result {
+        state.set_status(format!("Editor failed: {e}"), review::StatusKind::Error);
+    }
+    Ok(())
 }
 
 fn post_comment(
@@ -154,10 +157,19 @@ fn post_comment(
     });
 
     match result {
-        Ok((meta, threads)) => state.apply_refresh(meta, threads),
-        Err(e) => log_post_error(&format!(
-            "[FAIL] PR #{pr_number} {path}:{line} {side_label}: {e:#}\n"
-        )),
+        Ok((meta, threads)) => {
+            state.apply_refresh(meta, threads);
+            state.set_status(
+                format!("Comment posted on {path}:{line}"),
+                review::StatusKind::Success,
+            );
+        }
+        Err(e) => {
+            log_post_error(&format!(
+                "[FAIL] PR #{pr_number} {path}:{line} {side_label}: {e:#}\n"
+            ));
+            state.set_status(format!("Post failed: {e}"), review::StatusKind::Error);
+        }
     }
     Ok(())
 }
@@ -194,10 +206,16 @@ fn reply_to_comment(
     });
 
     match result {
-        Ok((meta, threads)) => state.apply_refresh(meta, threads),
-        Err(e) => log_post_error(&format!(
-            "[FAIL] reply PR #{pr_number} thread {thread_id}: {e:#}\n"
-        )),
+        Ok((meta, threads)) => {
+            state.apply_refresh(meta, threads);
+            state.set_status("Reply posted", review::StatusKind::Success);
+        }
+        Err(e) => {
+            log_post_error(&format!(
+                "[FAIL] reply PR #{pr_number} thread {thread_id}: {e:#}\n"
+            ));
+            state.set_status(format!("Reply failed: {e}"), review::StatusKind::Error);
+        }
     }
     Ok(())
 }
@@ -271,8 +289,17 @@ fn submit_review(
     });
 
     match result {
-        Ok((meta, threads)) => state.apply_refresh(meta, threads),
-        Err(e) => log_post_error(&format!("[FAIL] submit PR #{pr_number}: {e:#}\n")),
+        Ok((meta, threads)) => {
+            state.apply_refresh(meta, threads);
+            state.set_status(
+                format!("Review submitted: {event}"),
+                review::StatusKind::Success,
+            );
+        }
+        Err(e) => {
+            log_post_error(&format!("[FAIL] submit PR #{pr_number}: {e:#}\n"));
+            state.set_status(format!("Submit failed: {e}"), review::StatusKind::Error);
+        }
     }
     Ok(())
 }
