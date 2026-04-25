@@ -3,6 +3,7 @@ mod diff;
 mod git;
 mod github;
 mod session;
+mod tui;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -100,32 +101,24 @@ async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
         .save(&repo_root)?;
     }
 
+    let diffs = diff::compute_diffs(&repo_root, &desired_path, &meta.base_sha, &meta.files)?;
+
     if json {
-        let diffs =
-            diff::compute_diffs(&repo_root, &desired_path, &meta.base_sha, &meta.files)?;
         let output = serde_json::json!({
             "pr_number": pr_number,
             "title": meta.title,
             "base_branch": meta.base_branch,
             "base_sha": meta.base_sha,
             "head_sha": meta.head_sha,
+            "worktree": desired_path,
+            "reused": reused,
             "files": diffs,
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
         return Ok(());
     }
 
-    println!("Title:      {}", meta.title);
-    println!("Base:       {}", meta.base_branch);
-    println!("Head SHA:   {}", meta.head_sha);
-    println!("Files:      {}", meta.file_count());
-    println!(
-        "Worktree:   {} ({})",
-        desired_path.display(),
-        if reused { "reused" } else { "created" }
-    );
-
-    Ok(())
+    tui::run(meta, diffs)
 }
 
 fn do_cleanup(repo_root: &std::path::Path, pr_number: u64) -> Result<()> {

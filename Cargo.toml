@@ -6,8 +6,10 @@ edition = "2024"
 [dependencies]
 anyhow     = "1"
 clap       = { version = "4", features = ["derive"] }
+crossterm  = "0.29"
 git2       = "0.19"
 octocrab   = "0.44"
+ratatui    = "0.30"
 serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
 similar    = "2"

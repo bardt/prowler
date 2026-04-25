@@ -8,6 +8,7 @@ pub struct PrFile {
 }
 
 pub struct PrMetadata {
+    pub pr_number: u64,
     pub title: String,
     pub base_branch: String,
     pub base_sha: String,
@@ -17,8 +18,8 @@ pub struct PrMetadata {
 }
 
 impl PrMetadata {
-    pub fn file_count(&self) -> usize {
-        self.files.len()
+    pub fn pr_number(&self) -> u64 {
+        self.pr_number
     }
 }
 
@@ -70,6 +71,7 @@ pub async fn fetch_pr(token: &str, owner: &str, repo: &str, pr_number: u64) -> R
         .collect();
 
     Ok(PrMetadata {
+        pr_number,
         title,
         base_branch,
         base_sha,
