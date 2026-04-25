@@ -243,6 +243,18 @@ impl ReviewState {
         };
     }
 
+    pub fn cycle_focus_back(&mut self) {
+        self.focus = match self.focus {
+            Focus::Files => Focus::Head,
+            Focus::Base => Focus::Files,
+            Focus::Head => Focus::Base,
+        };
+    }
+
+    pub fn set_focus(&mut self, focus: Focus) {
+        self.focus = focus;
+    }
+
     pub fn move_down(&mut self) {
         match self.focus {
             Focus::Files => self.next_file(),
@@ -471,7 +483,7 @@ fn render_hotkeys(frame: &mut Frame, area: Rect) {
         Span::raw(" move  "),
         key("]/["),
         Span::raw(" hunk  "),
-        key("Tab"),
+        key("Tab/1-3"),
         Span::raw(" panel  "),
         key("e/E"),
         Span::raw(" edit  "),

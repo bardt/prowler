@@ -74,6 +74,10 @@ fn event_loop(
         match key.code {
             KeyCode::Char('q') => return Ok(()),
             KeyCode::Tab => state.cycle_focus(),
+            KeyCode::BackTab => state.cycle_focus_back(),
+            KeyCode::Char('1') => state.set_focus(review::Focus::Files),
+            KeyCode::Char('2') => state.set_focus(review::Focus::Base),
+            KeyCode::Char('3') => state.set_focus(review::Focus::Head),
             KeyCode::Char('j') | KeyCode::Down => state.move_down(),
             KeyCode::Char('k') | KeyCode::Up => state.move_up(),
             KeyCode::Char(']') => state.next_hunk(),
