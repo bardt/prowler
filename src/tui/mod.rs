@@ -1,5 +1,6 @@
 mod diff_view;
 mod editor;
+mod file_tree;
 mod review;
 mod syntax;
 
@@ -89,6 +90,7 @@ fn event_loop(
             KeyCode::Char('c') => post_comment(terminal, &mut state)?,
             KeyCode::Char('r') => reply_to_comment(terminal, &mut state)?,
             KeyCode::Char('S') => submit_review(terminal, &mut state)?,
+            KeyCode::Char(' ') => state.toggle_folder(),
             _ => {}
         }
     }

@@ -10,6 +10,7 @@ use crate::diff::FileDiff;
 use crate::github::{CommentSide, CommentThread, PrMetadata};
 use crate::session::{FileStatus, Session};
 use crate::tui::diff_view::{LaidOutDiff, Side, render_pane};
+use crate::tui::file_tree::{FileTree, VisibleItem, VisibleRow};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -34,6 +35,8 @@ pub struct ReviewState {
     pub token: String,
     pub owner: String,
     pub repo: String,
+    file_tree: FileTree,
+    visible_rows: Vec<VisibleRow>,
 }
 
 pub struct EditorTarget {
@@ -65,10 +68,14 @@ impl ReviewState {
             .collect();
         let scroll = vec![0; diffs.len()];
         let cursor = vec![0; diffs.len()];
+        let file_tree = FileTree::build(&diffs);
+        let visible_rows = file_tree.visible_rows();
         let mut list_state = ListState::default();
-        if !diffs.is_empty() {
-            list_state.select(Some(0));
-        }
+        // Land cursor on the first file row so a diff is shown immediately.
+        let first_file = visible_rows
+            .iter()
+            .position(|r| matches!(r.item, VisibleItem::File { .. }));
+        list_state.select(first_file.or_else(|| (!visible_rows.is_empty()).then_some(0)));
         Self {
             meta,
             diffs,
@@ -83,6 +90,33 @@ impl ReviewState {
             token,
             owner,
             repo,
+            file_tree,
+            visible_rows,
+        }
+    }
+
+    /// Toggle collapse on the folder under the file-panel cursor.
+    /// No-op when cursor is on a file row.
+    pub fn toggle_folder(&mut self) {
+        let Some(i) = self.list_state.selected() else {
+            return;
+        };
+        let Some(row) = self.visible_rows.get(i).cloned() else {
+            return;
+        };
+        let VisibleItem::Folder { path, .. } = row.item else {
+            return;
+        };
+        if let Some(folder) = self.file_tree.folder_at_mut(&path) {
+            folder.collapsed = !folder.collapsed;
+        }
+        self.visible_rows = self.file_tree.visible_rows();
+        let new_idx = self.visible_rows.iter().position(|r| match &r.item {
+            VisibleItem::Folder { path: p, .. } => p == &path,
+            _ => false,
+        });
+        if let Some(idx) = new_idx {
+            self.list_state.select(Some(idx));
         }
     }
 
@@ -145,6 +179,39 @@ impl ReviewState {
 
     pub fn pending_review_id(&self) -> Option<&str> {
         self.meta.pending_review_id.as_deref()
+    }
+
+    pub fn cursor_on_folder(&self) -> bool {
+        let Some(i) = self.list_state.selected() else {
+            return false;
+        };
+        matches!(
+            self.visible_rows.get(i).map(|r| &r.item),
+            Some(VisibleItem::Folder { .. })
+        )
+    }
+
+    pub fn cursor_on_thread(&self) -> bool {
+        let Some(i) = self.selected_idx() else {
+            return false;
+        };
+        let cur = self.cursor[i] as usize;
+        self.laid[i]
+            .rows
+            .get(cur)
+            .map(|r| r.thread_id.is_some())
+            .unwrap_or(false)
+    }
+
+    pub fn cursor_on_code_line(&self) -> bool {
+        let Some(i) = self.selected_idx() else {
+            return false;
+        };
+        let cur = self.cursor[i] as usize;
+        let Some(row) = self.laid[i].rows.get(cur) else {
+            return false;
+        };
+        row.thread_id.is_none() && (row.base_line.is_some() || row.head_line.is_some())
     }
 
     /// How many of the visible (non-outdated) comments belong to a pending review.
@@ -301,24 +368,30 @@ impl ReviewState {
     }
 
     fn next_file(&mut self) {
-        if self.diffs.is_empty() {
+        if self.visible_rows.is_empty() {
             return;
         }
         let i = self.list_state.selected().unwrap_or(0);
-        let next = (i + 1).min(self.diffs.len() - 1);
+        let next = (i + 1).min(self.visible_rows.len() - 1);
         self.list_state.select(Some(next));
     }
 
     fn prev_file(&mut self) {
-        if self.diffs.is_empty() {
+        if self.visible_rows.is_empty() {
             return;
         }
         let i = self.list_state.selected().unwrap_or(0);
         self.list_state.select(Some(i.saturating_sub(1)));
     }
 
+    /// Index into `self.diffs` for the file under the file-panel cursor.
+    /// `None` when the cursor is on a folder row.
     fn selected_idx(&self) -> Option<usize> {
-        self.list_state.selected().filter(|i| *i < self.diffs.len())
+        let i = self.list_state.selected()?;
+        match self.visible_rows.get(i)?.item {
+            VisibleItem::File { diff_idx, .. } => Some(diff_idx),
+            VisibleItem::Folder { .. } => None,
+        }
     }
 
     fn move_cursor(&mut self, delta: i32) {
@@ -398,7 +471,7 @@ pub fn render(frame: &mut Frame, state: &mut ReviewState) {
 
     render_header(frame, outer[0], state);
     render_body(frame, outer[1], state);
-    render_hotkeys(frame, outer[2]);
+    render_hotkeys(frame, outer[2], state);
 }
 
 fn render_header(frame: &mut Frame, area: Rect, state: &ReviewState) {
@@ -460,30 +533,48 @@ fn render_body(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
 
 fn render_files(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
     let items: Vec<ListItem> = state
-        .diffs
+        .visible_rows
         .iter()
-        .map(|d| {
-            let status = state.file_status(&d.path);
-            let (marker, marker_style) = match status {
-                FileStatus::Unviewed => (" ", Style::default()),
-                FileStatus::InProgress => ("*", Style::default().fg(Color::Cyan)),
-                FileStatus::Viewed => ("\u{2713}", Style::default().fg(Color::Green)),
-                FileStatus::Skipped => ("~", Style::default().fg(Color::Yellow)),
-            };
-            let path_style = if status == FileStatus::Viewed {
-                Style::default().fg(Color::DarkGray)
-            } else {
-                Style::default()
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(marker, marker_style),
-                Span::raw(" "),
-                Span::styled(d.path.clone(), path_style),
-                Span::raw("  "),
-                Span::styled(format!("+{}", d.added), Style::default().fg(Color::Green)),
-                Span::raw(" "),
-                Span::styled(format!("-{}", d.removed), Style::default().fg(Color::Red)),
-            ]))
+        .map(|row| match &row.item {
+            VisibleItem::Folder {
+                name, collapsed, ..
+            } => {
+                let indent = "  ".repeat(row.depth);
+                let chevron = if *collapsed { "\u{25B8}" } else { "\u{25BE}" };
+                ListItem::new(Line::from(vec![
+                    Span::raw(indent),
+                    Span::styled(
+                        format!("{chevron} {name}/"),
+                        Style::default().fg(Color::Cyan),
+                    ),
+                ]))
+            }
+            VisibleItem::File { diff_idx, name } => {
+                let d = &state.diffs[*diff_idx];
+                let status = state.file_status(&d.path);
+                let (marker, marker_style) = match status {
+                    FileStatus::Unviewed => (" ", Style::default()),
+                    FileStatus::InProgress => ("*", Style::default().fg(Color::Cyan)),
+                    FileStatus::Viewed => ("\u{2713}", Style::default().fg(Color::Green)),
+                    FileStatus::Skipped => ("~", Style::default().fg(Color::Yellow)),
+                };
+                let name_style = if status == FileStatus::Viewed {
+                    Style::default().fg(Color::DarkGray)
+                } else {
+                    Style::default()
+                };
+                let indent = "  ".repeat(row.depth);
+                ListItem::new(Line::from(vec![
+                    Span::raw(indent),
+                    Span::styled(marker, marker_style),
+                    Span::raw(" "),
+                    Span::styled(name.clone(), name_style),
+                    Span::raw("  "),
+                    Span::styled(format!("+{}", d.added), Style::default().fg(Color::Green)),
+                    Span::raw(" "),
+                    Span::styled(format!("-{}", d.removed), Style::default().fg(Color::Red)),
+                ]))
+            }
         })
         .collect();
 
@@ -508,27 +599,39 @@ fn render_files(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
     frame.render_stateful_widget(list, area, &mut state.list_state);
 }
 
-fn render_hotkeys(frame: &mut Frame, area: Rect) {
-    let hotkeys = Line::from(vec![
-        key("j/k"),
-        Span::raw(" move  "),
-        key("]/["),
-        Span::raw(" hunk  "),
-        key("Tab/1-3"),
-        Span::raw(" panel  "),
-        key("e/E"),
-        Span::raw(" edit  "),
-        key("v/s"),
-        Span::raw(" view/skip  "),
-        key("c/r"),
-        Span::raw(" comment/reply  "),
-        key("S"),
-        Span::raw(" submit review  "),
-        key("q"),
-        Span::raw(" quit"),
-    ]);
+fn render_hotkeys(frame: &mut Frame, area: Rect, state: &ReviewState) {
+    let mut groups: Vec<(&str, &str)> = Vec::new();
+    match state.focus {
+        Focus::Files => {
+            groups.push(("j/k", " move  "));
+            if state.cursor_on_folder() {
+                groups.push(("Space", " fold  "));
+            } else {
+                groups.push(("v/s", " view/skip  "));
+            }
+        }
+        Focus::Base | Focus::Head => {
+            groups.push(("j/k", " scroll  "));
+            groups.push(("]/[", " hunk  "));
+            if state.cursor_on_thread() {
+                groups.push(("r", " reply  "));
+            } else if state.cursor_on_code_line() {
+                groups.push(("e/E", " edit  "));
+                groups.push(("c", " comment  "));
+            }
+        }
+    }
+    groups.push(("Tab", " panel  "));
+    groups.push(("S", " submit  "));
+    groups.push(("q", " quit"));
+
+    let mut spans = Vec::with_capacity(groups.len() * 2);
+    for (k, label) in groups {
+        spans.push(key(k));
+        spans.push(Span::raw(label));
+    }
     frame.render_widget(
-        Paragraph::new(hotkeys).style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(Line::from(spans)).style(Style::default().fg(Color::DarkGray)),
         area,
     );
 }

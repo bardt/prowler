@@ -182,11 +182,6 @@ new milestone.
 - **Cross-file comment navigation.** Add `gN` / `gP` (or similar) to jump to the
   next/prev comment thread across the whole PR — selects the file, scrolls cursor
   to the thread anchor. Today `]` / `[` only navigate hunks within the current file.
-- **Tree-style file panel with folders.** Today the file panel is a flat list of
-  paths. For PRs touching many directories, a collapsible tree (`▶ src/`,
-  `▼ src/tui/`, `  ├ diff_view.rs`, `  └ review.rs`) is much easier to scan. Build
-  a tree from `meta.files`; render with indent + collapse markers; preserve the
-  currently-selected leaf when navigating up/down through folder rows.
 
 ## Conventions
 
