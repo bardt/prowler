@@ -220,3 +220,22 @@ panel then shows the "(no local diff yet — press R to refresh)" placeholder
 so the user knows to retry.
 
 ---
+
+## Outdated comments anchored at originalLine on BASE side (2026-04-26)
+
+**Choice:** When a thread has `line == null` (GitHub auto-cleared because the
+head moved), fall back to `originalLine` and force `side = Base`. The
+original code is what lives on the BASE side, so anchoring there shows the
+comment in the context where it was originally written. Both expanded
+headers and collapsed summaries now sport an italic dim `(outdated)` suffix
+on the root row.
+
+**Alternative considered:** A separate "Outdated comments" panel per file.
+Rejected — would require yet another pane and extra state. The inline
+approach reuses the existing layout machinery; readers can filter by
+glancing at the badge.
+
+**Edge case:** if `originalLine` is also null (rare), the thread is dropped
+silently — same as before. No new behaviour to test for.
+
+---

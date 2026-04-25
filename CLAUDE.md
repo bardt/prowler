@@ -149,10 +149,6 @@ new milestone.
 
 ## Backlog
 
-- **Render outdated comments.** `fetch_comments` drops comments whose `line` is null
-  (GitHub marks them outdated when the head moves). They're still meaningful — show
-  them somewhere (file-level pinned panel, or anchored to the original line on the
-  base side) rather than silently discarding.
 - **Mockable GitHub client for end-to-end tests.** The headless harness
   (state + render + event layers) is in place — `apply_key` is pure,
   `ReviewState::for_test` builds a state from fixtures, and `TestBackend`

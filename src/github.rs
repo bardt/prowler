@@ -195,10 +195,13 @@ pub async fn fetch_pr(
     let threads = gql_threads
         .into_iter()
         .filter_map(|t| {
-            let line = t.line? as u32;
-            let side = match t.diff_side.as_str() {
-                "LEFT" => CommentSide::Base,
-                "RIGHT" => CommentSide::Head,
+            // For outdated threads `line` is null. Anchor at the original line
+            // on the BASE side (where the original code still lives) so the
+            // user can see them in context.
+            let (line, side) = match (t.line, t.original_line, t.diff_side.as_str()) {
+                (Some(line), _, "LEFT") => (line as u32, CommentSide::Base),
+                (Some(line), _, "RIGHT") => (line as u32, CommentSide::Head),
+                (None, Some(orig), _) => (orig as u32, CommentSide::Base),
                 _ => return None,
             };
             let comments = t
@@ -548,6 +551,9 @@ struct GqlThread {
     id: String,
     path: String,
     line: Option<u32>,
+    /// Set when GitHub auto-cleared `line` (head moved); we fall back to this
+    /// to anchor outdated threads at their original position on the BASE side.
+    original_line: Option<u32>,
     diff_side: String,
     is_resolved: bool,
     is_outdated: bool,
@@ -635,6 +641,7 @@ query($owner: String!, $name: String!, $number: Int!) {
           id
           path
           line
+          originalLine
           diffSide
           isResolved
           isOutdated
@@ -671,6 +678,7 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String!) {
           id
           path
           line
+          originalLine
           diffSide
           isResolved
           isOutdated

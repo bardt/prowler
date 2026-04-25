@@ -23,18 +23,24 @@ pub enum Cell {
     Removed(String),
     Moved(String),
     /// Header line of a comment within a thread: `┌ @author 2026-04-20 14:30`
-    /// (`├` for replies, with an optional dim `(pending)` suffix).
+    /// (`├` for replies, with optional dim `(pending)` / `(outdated)` suffixes
+    /// on the root row only).
     CommentHeader {
         text: String,
         is_root: bool,
         is_pending: bool,
+        is_outdated: bool,
     },
     /// Body line of a comment: `│ {text}`.
     CommentBody(String),
     /// Thread terminator: `└`.
     CommentEnd,
     /// Single-row summary of a collapsed thread: `▸ 3 comments • @alice: preview`.
-    CollapsedThread { text: String, has_pending: bool },
+    CollapsedThread {
+        text: String,
+        has_pending: bool,
+        is_outdated: bool,
+    },
 }
 
 #[derive(Clone)]
@@ -173,6 +179,7 @@ fn attach_threads(
                 Cell::CollapsedThread {
                     text: collapsed_summary(thread, wrap_width),
                     has_pending: thread.comments.iter().any(|c| c.is_pending),
+                    is_outdated: thread.is_outdated,
                 },
                 &thread.id,
             );
@@ -187,6 +194,9 @@ fn attach_threads(
                     text: header_text,
                     is_root: idx == 0,
                     is_pending: comment.is_pending,
+                    // Only show (outdated) on the root header — replies belong
+                    // to the same thread so it'd be redundant.
+                    is_outdated: thread.is_outdated && idx == 0,
                 },
                 &thread.id,
             );
@@ -419,6 +429,7 @@ fn render_cell<'a>(cell: &'a Cell, syntax: &syntect::parsing::SyntaxReference) -
             text,
             is_root,
             is_pending,
+            is_outdated,
         } => {
             let lead = if *is_root { "\u{250C} " } else { "\u{251C} " };
             let mut spans = vec![
@@ -439,6 +450,15 @@ fn render_cell<'a>(cell: &'a Cell, syntax: &syntect::parsing::SyntaxReference) -
                         .add_modifier(Modifier::ITALIC),
                 ));
             }
+            if *is_outdated {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(
+                    "(outdated)",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ));
+            }
             Line::from(spans)
         }
         Cell::CommentBody(text) => Line::from(vec![
@@ -449,7 +469,11 @@ fn render_cell<'a>(cell: &'a Cell, syntax: &syntect::parsing::SyntaxReference) -
             "\u{2514}",
             Style::default().fg(Color::Yellow),
         )),
-        Cell::CollapsedThread { text, has_pending } => {
+        Cell::CollapsedThread {
+            text,
+            has_pending,
+            is_outdated,
+        } => {
             let mut spans = vec![
                 Span::styled("\u{25B8} ", Style::default().fg(Color::Yellow)),
                 Span::styled(
@@ -463,6 +487,15 @@ fn render_cell<'a>(cell: &'a Cell, syntax: &syntect::parsing::SyntaxReference) -
                 spans.push(Span::raw(" "));
                 spans.push(Span::styled(
                     "(pending)",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ));
+            }
+            if *is_outdated {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(
+                    "(outdated)",
                     Style::default()
                         .fg(Color::DarkGray)
                         .add_modifier(Modifier::ITALIC),
