@@ -22,6 +22,7 @@ pub enum Focus {
     Files,
     Base,
     Head,
+    Local,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -76,6 +77,14 @@ pub struct ReviewState {
     /// Channel for messages from background tasks (currently the viewed-state
     /// sync). The event loop drains this and turns each into a status row.
     status_tx: UnboundedSender<StatusMessage>,
+    /// Whether the LOCAL pane is currently displayed.
+    local_panel: bool,
+    /// Per-file local diff (HEAD → worktree), lazily computed when L is toggled
+    /// on or R is pressed. `Some(diff)` means computed (might be empty);
+    /// `None` means not yet computed.
+    local_diffs: Vec<Option<FileDiff>>,
+    /// Viewport scroll offset for the LOCAL pane, per file.
+    local_scroll: Vec<u16>,
 }
 
 /// Default wrap width used before we've measured the actual pane (e.g. on first paint).
@@ -118,7 +127,8 @@ impl ReviewState {
         repo: String,
         status_tx: UnboundedSender<StatusMessage>,
     ) -> Self {
-        let mut threads_by_file: Vec<Vec<CommentThread>> = vec![Vec::new(); diffs.len()];
+        let n = diffs.len();
+        let mut threads_by_file: Vec<Vec<CommentThread>> = vec![Vec::new(); n];
         for thread in threads {
             if let Some(idx) = diffs.iter().position(|d| d.path == thread.path) {
                 threads_by_file[idx].push(thread);
@@ -157,6 +167,9 @@ impl ReviewState {
             last_layout_width: DEFAULT_WRAP_WIDTH,
             expanded_threads,
             status_tx,
+            local_panel: false,
+            local_diffs: (0..n).map(|_| None).collect(),
+            local_scroll: vec![0; n],
         }
     }
 
@@ -177,6 +190,64 @@ impl ReviewState {
             self.last_layout_width,
             &self.expanded_threads,
         );
+    }
+
+    /// Toggle the LOCAL diff panel. On first show (or after the cursor moves
+    /// to a file with no cached local diff), the diff is computed lazily.
+    pub fn toggle_local_panel(&mut self) {
+        self.local_panel = !self.local_panel;
+        if self.local_panel {
+            self.ensure_local_for_current();
+        } else if self.focus == Focus::Local {
+            self.focus = Focus::Head;
+        }
+    }
+
+    /// Recompute the local diff for the file under the cursor.
+    pub fn refresh_local(&mut self) {
+        let Some(i) = self.selected_idx() else {
+            return;
+        };
+        self.compute_local_for(i);
+    }
+
+    fn ensure_local_for_current(&mut self) {
+        let Some(i) = self.selected_idx() else {
+            return;
+        };
+        if self.local_diffs[i].is_none() {
+            self.compute_local_for(i);
+        }
+    }
+
+    fn compute_local_for(&mut self, file_idx: usize) {
+        // Constructs a single PrFile so we can reuse `diff::compute_diffs` to
+        // produce a HEAD → worktree diff. status="modified" works for the
+        // common case; locally-added or locally-deleted files render as a full
+        // additions/removals diff respectively. Acceptable for v1.
+        let pr_file = crate::github::PrFile {
+            path: self.diffs[file_idx].path.clone(),
+            previous_path: None,
+            status: "modified".into(),
+            viewer_viewed_state: String::new(),
+        };
+        let diff = match crate::diff::compute_diffs(
+            &self.repo_root,
+            &self.session.worktree_path,
+            &self.meta.head_sha,
+            std::slice::from_ref(&pr_file),
+        ) {
+            Ok(mut v) => v.pop(),
+            Err(e) => {
+                self.set_status(
+                    format!("Local diff failed: {e}"),
+                    StatusKind::Error,
+                );
+                None
+            }
+        };
+        self.local_diffs[file_idx] = diff;
+        self.local_scroll[file_idx] = 0;
     }
 
     /// Toggle the expansion state of the comment thread under the cursor.
@@ -467,18 +538,22 @@ impl ReviewState {
     }
 
     pub fn cycle_focus(&mut self) {
-        self.focus = match self.focus {
-            Focus::Files => Focus::Base,
-            Focus::Base => Focus::Head,
-            Focus::Head => Focus::Files,
+        self.focus = match (self.focus, self.local_panel) {
+            (Focus::Files, _) => Focus::Base,
+            (Focus::Base, _) => Focus::Head,
+            (Focus::Head, true) => Focus::Local,
+            (Focus::Head, false) => Focus::Files,
+            (Focus::Local, _) => Focus::Files,
         };
     }
 
     pub fn cycle_focus_back(&mut self) {
-        self.focus = match self.focus {
-            Focus::Files => Focus::Head,
-            Focus::Base => Focus::Files,
-            Focus::Head => Focus::Base,
+        self.focus = match (self.focus, self.local_panel) {
+            (Focus::Files, true) => Focus::Local,
+            (Focus::Files, false) => Focus::Head,
+            (Focus::Base, _) => Focus::Files,
+            (Focus::Head, _) => Focus::Base,
+            (Focus::Local, _) => Focus::Head,
         };
     }
 
@@ -490,6 +565,7 @@ impl ReviewState {
         match self.focus {
             Focus::Files => self.next_file(),
             Focus::Base | Focus::Head => self.move_cursor(1),
+            Focus::Local => self.scroll_local(1),
         }
     }
 
@@ -497,7 +573,17 @@ impl ReviewState {
         match self.focus {
             Focus::Files => self.prev_file(),
             Focus::Base | Focus::Head => self.move_cursor(-1),
+            Focus::Local => self.scroll_local(-1),
         }
+    }
+
+    fn scroll_local(&mut self, delta: i32) {
+        let Some(i) = self.selected_idx() else {
+            return;
+        };
+        let cur = self.local_scroll[i] as i32;
+        let next = (cur + delta).max(0) as u16;
+        self.local_scroll[i] = next;
     }
 
     fn next_file(&mut self) {
@@ -507,6 +593,9 @@ impl ReviewState {
         let i = self.list_state.selected().unwrap_or(0);
         let next = (i + 1).min(self.visible_rows.len() - 1);
         self.list_state.select(Some(next));
+        if self.local_panel {
+            self.ensure_local_for_current();
+        }
     }
 
     fn prev_file(&mut self) {
@@ -515,6 +604,9 @@ impl ReviewState {
         }
         let i = self.list_state.selected().unwrap_or(0);
         self.list_state.select(Some(i.saturating_sub(1)));
+        if self.local_panel {
+            self.ensure_local_for_current();
+        }
     }
 
     /// Index into `self.diffs` for the file under the file-panel cursor.
@@ -692,6 +784,13 @@ pub fn apply_key(state: &mut ReviewState, key: KeyCode) -> bool {
         KeyCode::Char('1') => state.set_focus(Focus::Files),
         KeyCode::Char('2') => state.set_focus(Focus::Base),
         KeyCode::Char('3') => state.set_focus(Focus::Head),
+        KeyCode::Char('4') => {
+            if state.local_panel {
+                state.set_focus(Focus::Local);
+            }
+        }
+        KeyCode::Char('L') => state.toggle_local_panel(),
+        KeyCode::Char('R') => state.refresh_local(),
         KeyCode::Char('j') | KeyCode::Down => state.move_down(),
         KeyCode::Char('k') | KeyCode::Up => state.move_up(),
         KeyCode::Char(']') => state.next_hunk(),
@@ -759,13 +858,23 @@ fn render_header(frame: &mut Frame, area: Rect, state: &ReviewState) {
 }
 
 fn render_body(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
+    let constraints: Vec<Constraint> = if state.local_panel {
+        vec![
+            Constraint::Length(36),
+            Constraint::Ratio(1, 3),
+            Constraint::Ratio(1, 3),
+            Constraint::Min(20),
+        ]
+    } else {
+        vec![
             Constraint::Length(36),
             Constraint::Percentage(50),
             Constraint::Min(20),
-        ])
+        ]
+    };
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
         .split(area);
 
     state.last_pane_height = cols[1].height;
@@ -798,6 +907,79 @@ fn render_body(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
         scroll,
         cursor,
     );
+
+    if state.local_panel {
+        let local_file = i.and_then(|i| state.local_diffs.get(i).and_then(|d| d.as_ref()));
+        let local_scroll = i.map(|i| state.local_scroll[i]).unwrap_or(0);
+        render_local_pane(
+            frame,
+            cols[3],
+            state.focus == Focus::Local,
+            local_file,
+            local_scroll,
+        );
+    }
+}
+
+fn render_local_pane(
+    frame: &mut Frame,
+    area: Rect,
+    focused: bool,
+    file: Option<&FileDiff>,
+    scroll: u16,
+) {
+    use crate::diff::DiffLine;
+    use crate::tui::syntax;
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("LOCAL [4]")
+        .border_style(if focused {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        });
+
+    let lines: Vec<Line> = match file {
+        None => vec![Line::styled(
+            "(no local diff yet — press R to refresh)",
+            Style::default().fg(Color::DarkGray),
+        )],
+        Some(f) if f.added == 0 && f.removed == 0 => vec![Line::styled(
+            "(no local changes)",
+            Style::default().fg(Color::DarkGray),
+        )],
+        Some(f) => {
+            let syn = syntax::highlighter();
+            let syntax_ref = syn.syntax_for(&f.path);
+            let mut out = Vec::new();
+            for hunk in &f.hunks {
+                out.push(Line::from(Span::styled(
+                    hunk.header.clone(),
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                for line in &hunk.lines {
+                    let (text, marker, fg) = match line {
+                        DiffLine::Added(t) => (t.as_str(), "+ ", Color::Green),
+                        DiffLine::Removed(t) => (t.as_str(), "- ", Color::Red),
+                        DiffLine::Context(t) => (t.as_str(), "  ", Color::Reset),
+                        DiffLine::Moved(t) => (t.as_str(), "~ ", Color::Blue),
+                    };
+                    let trimmed = text.strip_suffix('\n').unwrap_or(text);
+                    let segs = syn.highlight_line(syntax_ref, trimmed);
+                    let mut spans = vec![Span::styled(marker, Style::default().fg(fg))];
+                    spans.extend(syntax::to_spans(&segs, None));
+                    out.push(Line::from(spans));
+                }
+            }
+            out
+        }
+    };
+
+    let para = Paragraph::new(lines).block(block).scroll((scroll, 0));
+    frame.render_widget(para, area);
 }
 
 fn render_files(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
@@ -896,8 +1078,17 @@ fn render_hotkeys(frame: &mut Frame, area: Rect, state: &ReviewState) {
                 groups.push(("c", " comment  "));
             }
         }
+        Focus::Local => {
+            groups.push(("j/k", " scroll  "));
+            groups.push(("R", " refresh  "));
+        }
     }
     groups.push(("Tab", " panel  "));
+    if state.local_panel {
+        groups.push(("L", " hide local  "));
+    } else {
+        groups.push(("L", " local  "));
+    }
     groups.push(("S", " submit  "));
     groups.push(("q", " quit"));
 
@@ -1163,6 +1354,44 @@ mod tests {
         assert!(joined.contains("BASE"), "base pane title");
         assert!(joined.contains("HEAD"), "head pane title");
         assert!(joined.contains("src/"), "file tree should show the folder row");
+    }
+
+    #[test]
+    fn capital_l_toggles_local_panel() {
+        let mut s = state(&["a.rs"], vec![]);
+        assert!(!s.local_panel, "local panel off by default");
+        apply_key(&mut s, KeyCode::Char('L'));
+        // We can't actually run `git show` against a fake worktree, so the
+        // toggle still flips the boolean — the diff just stays None and the
+        // pane shows the placeholder.
+        assert!(s.local_panel, "L should turn the pane on");
+        apply_key(&mut s, KeyCode::Char('L'));
+        assert!(!s.local_panel, "L again should turn the pane off");
+    }
+
+    #[test]
+    fn key_4_switches_focus_to_local_only_when_panel_on() {
+        let mut s = state(&["a.rs"], vec![]);
+        apply_key(&mut s, KeyCode::Char('4'));
+        assert_ne!(s.focus, Focus::Local, "panel off — 4 is a no-op");
+        apply_key(&mut s, KeyCode::Char('L'));
+        apply_key(&mut s, KeyCode::Char('4'));
+        assert_eq!(s.focus, Focus::Local, "panel on — 4 jumps to Local");
+    }
+
+    #[test]
+    fn tab_includes_local_when_panel_on() {
+        let mut s = state(&["a.rs"], vec![]);
+        apply_key(&mut s, KeyCode::Char('L'));
+        // Files -> Base -> Head -> Local -> Files
+        apply_key(&mut s, KeyCode::Tab);
+        assert_eq!(s.focus, Focus::Base);
+        apply_key(&mut s, KeyCode::Tab);
+        assert_eq!(s.focus, Focus::Head);
+        apply_key(&mut s, KeyCode::Tab);
+        assert_eq!(s.focus, Focus::Local);
+        apply_key(&mut s, KeyCode::Tab);
+        assert_eq!(s.focus, Focus::Files);
     }
 
     #[test]

@@ -182,3 +182,41 @@ tasks. `toggle_viewed` would call `tokio::spawn` and panic without a
 runtime; tests that need that path can opt into `#[tokio::test]` later.
 
 ---
+
+## M11: Local diff panel (2026-04-26)
+
+**Choice:** Toggleable fourth pane (`L` key) showing `git diff HEAD` for the
+currently-selected file. Computed lazily by reusing `diff::compute_diffs`
+with `meta.head_sha` as the base — the worktree side becomes the local edits.
+Status defaults to `"modified"` for every file, so locally-added or
+locally-removed files render as full additions/removals diffs (an acceptable
+edge case for v1).
+
+**Layout:** Four columns when on (`FILES | BASE | HEAD | LOCAL` at a 36-col
+files panel + thirds for the rest), three when off. Skipped the design's
+narrow-mode "drop BASE below 200 cols" branch — every column visible
+regardless of width. On a narrow terminal the panes shrink uniformly. If
+that becomes annoying, add the conditional later.
+
+**Rendering:** unified diff (single column with `+`/`-`/space markers) instead
+of side-by-side. Reasoning: the local diff shows what *you* changed since
+HEAD; both sides are the same file, just before/after. A unified view is
+the natural representation and saves horizontal space. BASE/HEAD stays
+side-by-side because there the two sides are genuinely different files
+(the PR's diff).
+
+**Auto-refresh on file change:** `next_file` / `prev_file` call
+`ensure_local_for_current()` when the panel is on. Previously-cached files
+keep their diff; a new file gets computed on first selection.
+
+**Skipped:** syntax highlighting in LOCAL pane re-uses `syntect` but doesn't
+apply the BG color tint that BASE/HEAD use for added/removed lines (those
+constants are private to `diff_view`). Local pane uses fg only — green/red
+markers and default fg for content. Visually duller but consistent enough.
+
+**Editor errors during compute:** `compute_local_for` writes a status-row
+error if `git show` or worktree read fails (e.g., worktree wiped). The
+panel then shows the "(no local diff yet — press R to refresh)" placeholder
+so the user knows to retry.
+
+---
