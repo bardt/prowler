@@ -139,6 +139,7 @@ Toggle local panel with `L`.
 | M11 | Local diff panel | ✅ |
 | M12 | Dashboard | 🔲 next |
 | M13 | Missing review actions | 🔲 |
+| M14 | Impact-based file sorting | 🔲 |
 
 **M10 scope:** A panel listing all comments in the current pending review, with a verdict
 selector (Approve / Comment / Request changes) and an optional summary body. Submits via
@@ -174,6 +175,28 @@ Concretely:
   `addPullRequestReviewThread` with `startLine` + `startSide` + `line`.
 
 These are the most user-facing gaps GitHub supports but we don't.
+
+**M14 scope:** Optional file-panel ordering by dependency-graph "impact" — core
+modules imported by many others sort first, leaf files last. Per design.md:
+"core modules imported by many others go first, lockfiles last."
+
+- Compute an import graph from the set of changed files plus their direct
+  importers in the worktree. Per-language parser: Rust `use` statements, JS/TS
+  `import` / `require`, Python `import`. Start with one language and let the
+  rest fall back to alphabetical.
+- For each file, count how many other files import it (in-degree). That's
+  the impact score. Higher = more central.
+- Sort the flat file list (or the leaf level of the tree) by impact
+  descending; lockfiles, generated paths, and unknown languages tie-break to
+  the bottom alphabetically.
+- Make it a toggle (e.g. `o` cycles ordering: tree → flat-impact → flat-alpha)
+  rather than a hard-coded mode, since for small PRs the tree is still
+  faster to scan.
+
+**Tradeoff:** computing imports requires parsing every file in the repo (or
+at least every reverse-dependency); on big monorepos this is non-trivial.
+Cache the graph on disk under `.review/impact-graph.json` keyed by HEAD SHA
+to avoid re-parsing on every prowler open.
 
 Update the **Current milestone** section and the status column above at the start of each
 new milestone.
