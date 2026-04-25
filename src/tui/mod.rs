@@ -80,29 +80,19 @@ fn event_loop(
             continue;
         }
 
+        // Side-effectful keys that need terminal/runtime access stay here;
+        // everything else is handled by the pure `review::apply_key`.
         match key.code {
-            KeyCode::Char('q') => return Ok(()),
-            KeyCode::Tab => state.cycle_focus(),
-            KeyCode::BackTab => state.cycle_focus_back(),
-            KeyCode::Char('1') => state.set_focus(review::Focus::Files),
-            KeyCode::Char('2') => state.set_focus(review::Focus::Base),
-            KeyCode::Char('3') => state.set_focus(review::Focus::Head),
-            KeyCode::Char('j') | KeyCode::Down => state.move_down(),
-            KeyCode::Char('k') | KeyCode::Up => state.move_up(),
-            KeyCode::Char(']') => state.next_hunk(),
-            KeyCode::Char('[') => state.prev_hunk(),
             KeyCode::Char('e') => open_in_editor(terminal, &mut state, Side::Head)?,
             KeyCode::Char('E') => open_in_editor(terminal, &mut state, Side::Base)?,
-            KeyCode::Char('v') => state.toggle_viewed(),
-            KeyCode::Char('s') => state.toggle_skipped(),
             KeyCode::Char('c') => post_comment(terminal, &mut state)?,
             KeyCode::Char('r') => reply_to_comment(terminal, &mut state)?,
             KeyCode::Char('S') => submit_review(terminal, &mut state)?,
-            KeyCode::Char(' ') => state.toggle_folder(),
-            KeyCode::Enter => state.toggle_thread(),
-            KeyCode::Char('n') => state.goto_next_thread(),
-            KeyCode::Char('N') => state.goto_prev_thread(),
-            _ => {}
+            other => {
+                if review::apply_key(&mut state, other) {
+                    return Ok(());
+                }
+            }
         }
     }
 }

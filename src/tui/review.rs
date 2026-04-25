@@ -1,3 +1,4 @@
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -16,7 +17,7 @@ use crate::session::{FileStatus, Session};
 use crate::tui::diff_view::{LaidOutDiff, Side, render_pane};
 use crate::tui::file_tree::{FileTree, VisibleItem, VisibleRow};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Focus {
     Files,
     Base,
@@ -679,6 +680,33 @@ impl ReviewState {
     }
 }
 
+/// Apply a pure (non-terminal-touching) key to the state. Returns `true` for
+/// `q` (quit), `false` otherwise. Side-effectful keys (`c`, `r`, `S`, `e`, `E`)
+/// are NOT handled here — the event loop dispatches them itself because they
+/// suspend the TUI / spawn editors / await network I/O.
+pub fn apply_key(state: &mut ReviewState, key: KeyCode) -> bool {
+    match key {
+        KeyCode::Char('q') => return true,
+        KeyCode::Tab => state.cycle_focus(),
+        KeyCode::BackTab => state.cycle_focus_back(),
+        KeyCode::Char('1') => state.set_focus(Focus::Files),
+        KeyCode::Char('2') => state.set_focus(Focus::Base),
+        KeyCode::Char('3') => state.set_focus(Focus::Head),
+        KeyCode::Char('j') | KeyCode::Down => state.move_down(),
+        KeyCode::Char('k') | KeyCode::Up => state.move_up(),
+        KeyCode::Char(']') => state.next_hunk(),
+        KeyCode::Char('[') => state.prev_hunk(),
+        KeyCode::Char('v') => state.toggle_viewed(),
+        KeyCode::Char('s') => state.toggle_skipped(),
+        KeyCode::Char(' ') => state.toggle_folder(),
+        KeyCode::Enter => state.toggle_thread(),
+        KeyCode::Char('n') => state.goto_next_thread(),
+        KeyCode::Char('N') => state.goto_prev_thread(),
+        _ => {}
+    }
+    false
+}
+
 pub fn render(frame: &mut Frame, state: &mut ReviewState) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -891,4 +919,262 @@ fn key(label: &str) -> Span<'_> {
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD),
     )
+}
+
+#[cfg(test)]
+impl ReviewState {
+    /// Construct a `ReviewState` with stub I/O fields suitable for unit tests.
+    /// `Session` and worktree paths are dummies; the status channel's receiver
+    /// is dropped, so any background sends are best-effort.
+    pub fn for_test(
+        meta: PrMetadata,
+        diffs: Vec<FileDiff>,
+        threads: Vec<CommentThread>,
+    ) -> Self {
+        use std::collections::HashMap;
+        let session = Session {
+            pr_number: meta.pr_number,
+            branch: "test".into(),
+            worktree_path: PathBuf::new(),
+            base_worktree_path: PathBuf::new(),
+            base_sha: meta.base_sha.clone(),
+            head_sha: meta.head_sha.clone(),
+            files: HashMap::new(),
+        };
+        let (status_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        Self::new(
+            meta,
+            diffs,
+            threads,
+            session,
+            PathBuf::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            status_tx,
+        )
+    }
+
+    /// Test-only accessor: index into `diffs` for the file under the
+    /// file-panel cursor (mirrors the private `selected_idx`).
+    #[cfg(test)]
+    pub fn selected_file_idx(&self) -> Option<usize> {
+        self.selected_idx()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diff::{DiffLine, FileDiff, Hunk};
+    use crate::github::{CommentSide, CommentThread, PrFile, PrMetadata, ReviewComment};
+
+    fn meta(files: &[&str]) -> PrMetadata {
+        PrMetadata {
+            pr_number: 1,
+            node_id: "PR_test".into(),
+            title: "Test PR".into(),
+            base_branch: "main".into(),
+            base_sha: "base_sha".into(),
+            head_branch: "feature".into(),
+            head_sha: "head_sha".into(),
+            files: files
+                .iter()
+                .map(|p| PrFile {
+                    path: (*p).to_owned(),
+                    previous_path: None,
+                    status: "modified".into(),
+                    viewer_viewed_state: "UNVIEWED".into(),
+                })
+                .collect(),
+            pending_review_id: None,
+        }
+    }
+
+    fn diff(path: &str) -> FileDiff {
+        FileDiff {
+            path: path.to_owned(),
+            previous_path: None,
+            hunks: vec![Hunk {
+                header: "@@ -1,3 +1,3 @@".to_owned(),
+                lines: vec![
+                    DiffLine::Context("ctx 1\n".into()),
+                    DiffLine::Removed("old\n".into()),
+                    DiffLine::Added("new\n".into()),
+                    DiffLine::Context("ctx 2\n".into()),
+                ],
+            }],
+            added: 1,
+            removed: 1,
+        }
+    }
+
+    fn thread(id: &str, path: &str, line: u32, body: &str) -> CommentThread {
+        CommentThread {
+            id: id.to_owned(),
+            path: path.to_owned(),
+            side: CommentSide::Head,
+            line,
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![ReviewComment {
+                author: "alice".into(),
+                body: body.into(),
+                created_at: "2026-04-26 10:00".into(),
+                is_pending: false,
+            }],
+        }
+    }
+
+    fn state(files: &[&str], threads: Vec<CommentThread>) -> ReviewState {
+        let m = meta(files);
+        let diffs: Vec<FileDiff> = files.iter().map(|p| diff(p)).collect();
+        ReviewState::for_test(m, diffs, threads)
+    }
+
+    #[test]
+    fn cursor_lands_on_first_file_at_startup() {
+        let s = state(&["a.rs", "b.rs"], vec![]);
+        assert_eq!(s.selected_file_idx(), Some(0));
+    }
+
+    #[test]
+    fn j_moves_down_through_visible_rows() {
+        let mut s = state(&["a.rs", "b.rs"], vec![]);
+        let before = s.list_state.selected();
+        apply_key(&mut s, KeyCode::Char('j'));
+        let after = s.list_state.selected();
+        assert!(after > before, "j should advance the file panel cursor");
+    }
+
+    #[test]
+    fn k_moves_up_and_clamps_at_zero() {
+        let mut s = state(&["a.rs", "b.rs"], vec![]);
+        apply_key(&mut s, KeyCode::Char('k'));
+        assert_eq!(s.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn space_toggles_folder_collapse() {
+        // Two files in the same folder so a folder row exists.
+        let mut s = state(&["src/a.rs", "src/b.rs"], vec![]);
+        // Cursor lands on the first file row, not the folder. Move up onto the folder.
+        apply_key(&mut s, KeyCode::Char('k'));
+        assert!(s.cursor_on_folder(), "expected cursor on the src/ folder");
+        let visible_before = s.visible_rows.len();
+        apply_key(&mut s, KeyCode::Char(' '));
+        let visible_after = s.visible_rows.len();
+        assert!(
+            visible_after < visible_before,
+            "collapsing the folder should hide its children: {visible_before} -> {visible_after}"
+        );
+        apply_key(&mut s, KeyCode::Char(' '));
+        assert_eq!(s.visible_rows.len(), visible_before, "second toggle re-expands");
+    }
+
+    #[test]
+    fn focus_keys_jump_to_panels() {
+        let mut s = state(&["a.rs"], vec![]);
+        apply_key(&mut s, KeyCode::Char('2'));
+        assert_eq!(s.focus, Focus::Base);
+        apply_key(&mut s, KeyCode::Char('3'));
+        assert_eq!(s.focus, Focus::Head);
+        apply_key(&mut s, KeyCode::Char('1'));
+        assert_eq!(s.focus, Focus::Files);
+    }
+
+    #[test]
+    fn tab_cycles_focus_forward() {
+        let mut s = state(&["a.rs"], vec![]);
+        apply_key(&mut s, KeyCode::Tab);
+        assert_eq!(s.focus, Focus::Base);
+        apply_key(&mut s, KeyCode::Tab);
+        assert_eq!(s.focus, Focus::Head);
+        apply_key(&mut s, KeyCode::Tab);
+        assert_eq!(s.focus, Focus::Files);
+    }
+
+    #[test]
+    fn shift_tab_cycles_focus_backward() {
+        let mut s = state(&["a.rs"], vec![]);
+        apply_key(&mut s, KeyCode::BackTab);
+        assert_eq!(s.focus, Focus::Head);
+    }
+
+    #[test]
+    fn q_signals_quit() {
+        let mut s = state(&["a.rs"], vec![]);
+        let quit = apply_key(&mut s, KeyCode::Char('q'));
+        assert!(quit);
+    }
+
+    #[test]
+    fn enter_toggles_thread_when_cursor_on_it() {
+        let t = thread("T1", "a.rs", 1, "hello");
+        let mut s = state(&["a.rs"], vec![t]);
+        // Move into the diff pane and onto the thread row.
+        apply_key(&mut s, KeyCode::Char('3'));
+        // Walk down until we're on a thread row.
+        let mut steps = 0;
+        while !s.cursor_on_thread() && steps < 50 {
+            apply_key(&mut s, KeyCode::Char('j'));
+            steps += 1;
+        }
+        assert!(s.cursor_on_thread(), "expected to find a thread row by scrolling");
+        let i = s.selected_file_idx().unwrap();
+        let rows_before = s.laid[i].rows.len();
+        apply_key(&mut s, KeyCode::Enter);
+        let rows_after = s.laid[i].rows.len();
+        assert!(
+            rows_after > rows_before,
+            "expanding a collapsed thread should add rows: {rows_before} -> {rows_after}"
+        );
+    }
+
+    /// Render the TUI to an in-memory `TestBackend` and return one `String` per row.
+    fn render_to_lines(state: &mut ReviewState, w: u16, h: u16) -> Vec<String> {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(f, state)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let mut lines = Vec::with_capacity(buffer.area.height as usize);
+        for y in 0..buffer.area.height {
+            let mut line = String::new();
+            for x in 0..buffer.area.width {
+                line.push_str(
+                    buffer[(x, y)]
+                        .symbol(),
+                );
+            }
+            lines.push(line.trim_end().to_owned());
+        }
+        lines
+    }
+
+    #[test]
+    fn render_includes_pr_title_and_file_panel() {
+        let mut s = state(&["src/a.rs", "src/b.rs"], vec![]);
+        let lines = render_to_lines(&mut s, 120, 20);
+        let joined = lines.join("\n");
+        assert!(joined.contains("Test PR"), "header should contain PR title");
+        assert!(joined.contains("FILES"), "files panel title");
+        assert!(joined.contains("BASE"), "base pane title");
+        assert!(joined.contains("HEAD"), "head pane title");
+        assert!(joined.contains("src/"), "file tree should show the folder row");
+    }
+
+    #[test]
+    fn n_jumps_to_next_thread_across_files() {
+        let mut s = state(
+            &["a.rs", "b.rs"],
+            vec![thread("T1", "b.rs", 1, "hi")],
+        );
+        // Cursor starts on file a.rs which has no threads.
+        assert_eq!(s.selected_file_idx(), Some(0));
+        apply_key(&mut s, KeyCode::Char('n'));
+        assert_eq!(s.selected_file_idx(), Some(1), "n should jump to the file with the thread");
+        assert!(s.cursor_on_thread(), "cursor should land on the thread row");
+    }
 }

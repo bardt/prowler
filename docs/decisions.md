@@ -151,3 +151,34 @@ marks Skipped. Same code path as Unviewed because the existing `_ =>
 FileStatus::Viewed` arm already covers Dismissed.
 
 ---
+
+## Headless TUI testing harness (2026-04-26)
+
+**Choice:** Three-layer split — pure key handler, state constructor, render
+inspection.
+
+- `pub fn apply_key(state: &mut ReviewState, key: KeyCode) -> bool` is a free
+  function in `review.rs` that handles every key that doesn't touch the
+  terminal or runtime. Returns `true` for `q` (quit signal). The event loop
+  matches the side-effectful keys (`c`, `r`, `S`, `e`, `E`) explicitly and
+  delegates everything else to `apply_key`.
+- `ReviewState::for_test(meta, diffs, threads)` (gated `#[cfg(test)]`) stubs
+  Session, repo paths, and tokens, and creates an mpsc channel whose
+  receiver is dropped (background sends are best-effort and panic-free under
+  a Tokio runtime; tests that don't trigger them work without
+  `#[tokio::test]`).
+- `TestBackend` from ratatui plus a small `render_to_lines` helper let
+  snapshot tests grep the rendered buffer for known content.
+
+**Skipped: API trait.** `fetch_pr`, `post_thread`, etc. still build their own
+`Octocrab` clients and hit the network. End-to-end tests of post + refresh
+flows would need a `GitHubClient` trait with `Mock` and `Octocrab` impls.
+Documented as a follow-up backlog item; current tests cover state +
+navigation + render layers, which catches the regressions most likely to be
+shipped during autonomous work (cursor math, layout, key dispatch).
+
+**Why no `#[tokio::test]`:** the existing tests don't trigger any spawned
+tasks. `toggle_viewed` would call `tokio::spawn` and panic without a
+runtime; tests that need that path can opt into `#[tokio::test]` later.
+
+---
