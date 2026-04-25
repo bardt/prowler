@@ -113,3 +113,22 @@ navigation feels like vim's `n` / `N` — assumed knowledge for terminal users.
 Reconsider if first-time users miss it.
 
 ---
+
+## Async sync errors surfaced via mpsc channel (2026-04-26)
+
+**Choice:** `tui::run` creates a `tokio::sync::mpsc::unbounded_channel` and
+hands the sender to `ReviewState`. The spawned `set_viewed` task sends a
+`StatusMessage` on error (success is silent — `v` toggles dozens of files
+during a review and a "Synced" banner on each would be noise). The event loop
+drains the receiver before each draw and converts every message into
+`state.set_status`.
+
+**Alternative considered:** Polling a shared `Mutex<VecDeque>` from the event
+loop. Rejected — mpsc is the idiomatic Tokio answer and avoids lock
+contention.
+
+**Success silenced.** Only errors hit the status row. Successful viewed-state
+syncs are logged to `/tmp/prowler-sync.log` only (existing behaviour). If a
+user ever wants positive confirmation, a verbose-mode flag could re-enable.
+
+---

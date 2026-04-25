@@ -8,6 +8,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use tokio::sync::mpsc::UnboundedSender;
+
 use crate::diff::FileDiff;
 use crate::github::{CommentSide, CommentThread, PrMetadata};
 use crate::session::{FileStatus, Session};
@@ -33,6 +35,13 @@ pub struct Status {
     pub text: String,
     pub kind: StatusKind,
     pub expires_at: Instant,
+}
+
+/// Message sent from background tasks (e.g. spawned viewed-state sync) to the
+/// event loop, which converts it into a `Status` for the footer.
+pub struct StatusMessage {
+    pub text: String,
+    pub kind: StatusKind,
 }
 
 const STATUS_TTL: Duration = Duration::from_secs(3);
@@ -63,6 +72,9 @@ pub struct ReviewState {
     /// Thread IDs currently expanded. Anything not in here renders as a one-row
     /// `CollapsedThread`. Newly-posted threads are auto-added on `apply_refresh`.
     expanded_threads: HashSet<String>,
+    /// Channel for messages from background tasks (currently the viewed-state
+    /// sync). The event loop drains this and turns each into a status row.
+    status_tx: UnboundedSender<StatusMessage>,
 }
 
 /// Default wrap width used before we've measured the actual pane (e.g. on first paint).
@@ -103,6 +115,7 @@ impl ReviewState {
         token: String,
         owner: String,
         repo: String,
+        status_tx: UnboundedSender<StatusMessage>,
     ) -> Self {
         let mut threads_by_file: Vec<Vec<CommentThread>> = vec![Vec::new(); diffs.len()];
         for thread in threads {
@@ -142,6 +155,7 @@ impl ReviewState {
             threads_by_file,
             last_layout_width: DEFAULT_WRAP_WIDTH,
             expanded_threads,
+            status_tx,
         }
     }
 
@@ -374,9 +388,10 @@ impl ReviewState {
         let token = self.token.clone();
         let node_id = self.meta.node_id.clone();
         let pr = self.session.pr_number;
+        let status_tx = self.status_tx.clone();
         tokio::spawn(async move {
             let result = crate::github::set_viewed(&token, &node_id, &path, viewed).await;
-            let line = match result {
+            let line = match &result {
                 Ok(()) => format!("[ok]   PR #{pr} {path} viewed={viewed}\n"),
                 Err(e) => format!("[FAIL] PR #{pr} {path} viewed={viewed}: {e:#}\n"),
             };
@@ -387,6 +402,13 @@ impl ReviewState {
             {
                 use std::io::Write;
                 let _ = f.write_all(line.as_bytes());
+            }
+            if let Err(e) = result {
+                let action = if viewed { "mark viewed" } else { "unmark viewed" };
+                let _ = status_tx.send(StatusMessage {
+                    text: format!("Sync failed ({action} {path}): {e}"),
+                    kind: StatusKind::Error,
+                });
             }
         });
     }

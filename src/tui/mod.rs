@@ -13,6 +13,7 @@ use crate::diff::FileDiff;
 use crate::github::{CommentThread, PrMetadata};
 use crate::session::Session;
 use crate::tui::diff_view::Side;
+use tokio::sync::mpsc;
 
 pub fn run(
     meta: PrMetadata,
@@ -51,11 +52,18 @@ fn event_loop(
     owner: String,
     repo: String,
 ) -> Result<()> {
+    let (status_tx, mut status_rx) = mpsc::unbounded_channel::<review::StatusMessage>();
     let mut state = review::ReviewState::new(
-        meta, diffs, threads, session, repo_root, token, owner, repo,
+        meta, diffs, threads, session, repo_root, token, owner, repo, status_tx,
     );
 
     loop {
+        // Drain any pending background status messages (e.g. async viewed-state
+        // sync errors) before drawing.
+        while let Ok(msg) = status_rx.try_recv() {
+            state.set_status(msg.text, msg.kind);
+        }
+
         terminal
             .draw(|frame| review::render(frame, &mut state))
             .context("failed to draw frame")?;

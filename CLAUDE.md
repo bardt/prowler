@@ -159,11 +159,6 @@ new milestone.
   (GitHub marks them outdated when the head moves). They're still meaningful — show
   them somewhere (file-level pinned panel, or anchored to the original line on the
   base side) rather than silently discarding.
-- **Status feedback for async syncs (`v`, `s`).** Viewed-state sync uses
-  `tokio::spawn` fire-and-forget — errors only land in `/tmp/prowler-sync.log`.
-  To surface them in the UI, add an `mpsc::UnboundedSender<StatusMessage>` to
-  the spawned task and drain it from the event loop on each tick. The status
-  row infrastructure is already in place (`ReviewState::set_status`).
 
 ## Conventions
 
