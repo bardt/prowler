@@ -138,11 +138,34 @@ Toggle local panel with `L`.
 | M10 | Submit review | ✅ |
 | M11 | Local diff panel | ✅ |
 | M12 | Dashboard | 🔲 next |
+| M13 | Missing review actions | 🔲 |
 
 **M10 scope:** A panel listing all comments in the current pending review, with a verdict
 selector (Approve / Comment / Request changes) and an optional summary body. Submits via
 GraphQL `submitPullRequestReview` (or creates the review with `addPullRequestReview` if
 no pending one exists). Without this, M9's `c` accumulates Pending comments forever.
+
+**M13 scope:** GitHub-supported review actions that prowler doesn't expose yet.
+Concretely:
+
+- **Resolve / unresolve threads.** `resolveReviewThread` and `unresolveReviewThread`
+  GraphQL mutations. We already fetch `viewerCanResolve` / `viewerCanUnresolve` —
+  wire a key (probably `R` is taken; consider `o`/`O` for resolve/open) that toggles
+  a thread's `is_resolved` and refreshes.
+- **Edit own comments.** `updatePullRequestReviewComment` mutation. Detect that the
+  cursor is on a comment authored by the viewer; press a key (e.g. `E`-on-thread or
+  `Ctrl+E`) to open the body in `$EDITOR`, save, push.
+- **Delete own comments.** `deletePullRequestReviewComment`. Confirmation prompt
+  before sending.
+- **Apply suggested changes.** GitHub's ` ```suggestion ` blocks can be applied
+  directly. Detect the block in a comment body, render distinctly, and add a
+  keybind that writes the suggested replacement into the worktree file at the
+  thread's anchor line.
+- **Multi-line comments.** `c` currently anchors to a single line. Add a "selection
+  mode" (e.g. `V` to start, then `j/k` to extend, then `c`) that posts via
+  `addPullRequestReviewThread` with `startLine` + `startSide` + `line`.
+
+These are the most user-facing gaps GitHub supports but we don't.
 
 Update the **Current milestone** section and the status column above at the start of each
 new milestone.
