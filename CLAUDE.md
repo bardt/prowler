@@ -1,6 +1,8 @@
 # prowler
 
-A terminal UI for deep GitHub PR review. Inspired by lazygit's UX philosophy.
+A terminal UI for deep GitHub PR review, inspired by lazygit's UX philosophy.
+Public-facing documentation lives in `README.md`; this file is the contract
+for AI coding agents working on the project.
 
 ## What it does
 
@@ -200,6 +202,7 @@ new milestone.
   directly from other modules
 - TUI code lives entirely under `tui/` — no ratatui imports outside that module
 - Keep `tokio` usage minimal: only for octocrab calls, never in the TUI event loop
+- User-facing changes go in `CHANGELOG.md` under `## Unreleased` at the top
 
 ## Design doc
 
