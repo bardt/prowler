@@ -4,6 +4,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
+use std::path::{Path, PathBuf};
+
 use crate::diff::FileDiff;
 use crate::github::PrMetadata;
 use crate::tui::diff_view::{LaidOutDiff, Side, render_pane};
@@ -21,15 +23,30 @@ pub struct ReviewState {
     laid: Vec<LaidOutDiff>,
     pub list_state: ListState,
     pub focus: Focus,
-    /// Scroll offset (in rows) for the diff panes, per file.
+    /// Viewport scroll offset (in rows) per file.
     scroll: Vec<u16>,
+    /// Cursor row index per file. The marker shown in the diff panes.
+    cursor: Vec<u16>,
     last_pane_height: u16,
+    head_worktree: PathBuf,
+    base_worktree: PathBuf,
+}
+
+pub struct EditorTarget {
+    pub file: PathBuf,
+    pub line: u32,
 }
 
 impl ReviewState {
-    pub fn new(meta: PrMetadata, diffs: Vec<FileDiff>) -> Self {
+    pub fn new(
+        meta: PrMetadata,
+        diffs: Vec<FileDiff>,
+        head_worktree: PathBuf,
+        base_worktree: PathBuf,
+    ) -> Self {
         let laid = diffs.iter().map(LaidOutDiff::from_file).collect();
         let scroll = vec![0; diffs.len()];
+        let cursor = vec![0; diffs.len()];
         let mut list_state = ListState::default();
         if !diffs.is_empty() {
             list_state.select(Some(0));
@@ -41,8 +58,43 @@ impl ReviewState {
             list_state,
             focus: Focus::Files,
             scroll,
+            cursor,
             last_pane_height: 20,
+            head_worktree,
+            base_worktree,
         }
+    }
+
+    pub fn editor_target(&self, side: Side) -> Option<EditorTarget> {
+        let i = self.selected_idx()?;
+        let file = &self.diffs[i];
+        let laid = &self.laid[i];
+        let cur = self.cursor[i] as usize;
+
+        let pick = |row: &crate::tui::diff_view::Row| match side {
+            Side::Base => row.base_line,
+            Side::Head => row.head_line,
+        };
+
+        let line = laid.rows[cur..]
+            .iter()
+            .find_map(pick)
+            .or_else(|| laid.rows[..cur].iter().rev().find_map(pick))
+            .unwrap_or(1);
+
+        let rel_path: &Path = match side {
+            Side::Base => Path::new(file.previous_path.as_deref().unwrap_or(&file.path)),
+            Side::Head => Path::new(&file.path),
+        };
+        let root = match side {
+            Side::Base => &self.base_worktree,
+            Side::Head => &self.head_worktree,
+        };
+
+        Some(EditorTarget {
+            file: root.join(rel_path),
+            line,
+        })
     }
 
     pub fn cycle_focus(&mut self) {
@@ -56,14 +108,14 @@ impl ReviewState {
     pub fn move_down(&mut self) {
         match self.focus {
             Focus::Files => self.next_file(),
-            Focus::Base | Focus::Head => self.scroll_by(1),
+            Focus::Base | Focus::Head => self.move_cursor(1),
         }
     }
 
     pub fn move_up(&mut self) {
         match self.focus {
             Focus::Files => self.prev_file(),
-            Focus::Base | Focus::Head => self.scroll_by(-1),
+            Focus::Base | Focus::Head => self.move_cursor(-1),
         }
     }
 
@@ -88,12 +140,29 @@ impl ReviewState {
         self.list_state.selected().filter(|i| *i < self.diffs.len())
     }
 
-    fn scroll_by(&mut self, delta: i32) {
+    fn move_cursor(&mut self, delta: i32) {
         let Some(i) = self.selected_idx() else { return };
+        let last = self.laid[i].rows.len().saturating_sub(1) as i32;
+        let cur = self.cursor[i] as i32;
+        let next = (cur + delta).clamp(0, last.max(0)) as u16;
+        self.cursor[i] = next;
+        self.ensure_cursor_visible(i);
+    }
+
+    fn ensure_cursor_visible(&mut self, i: usize) {
+        let visible = self.last_pane_height.saturating_sub(2); // borders
+        if visible == 0 {
+            return;
+        }
+        let cursor = self.cursor[i];
+        let mut scroll = self.scroll[i];
+        if cursor < scroll {
+            scroll = cursor;
+        } else if cursor >= scroll + visible {
+            scroll = cursor + 1 - visible;
+        }
         let max = self.max_scroll(i);
-        let cur = self.scroll[i] as i32;
-        let next = (cur + delta).clamp(0, max as i32);
-        self.scroll[i] = next as u16;
+        self.scroll[i] = scroll.min(max);
     }
 
     fn max_scroll(&self, i: usize) -> u16 {
@@ -104,26 +173,28 @@ impl ReviewState {
 
     pub fn next_hunk(&mut self) {
         let Some(i) = self.selected_idx() else { return };
-        let cur = self.scroll[i];
+        let cur = self.cursor[i];
         if let Some(&next) = self.laid[i]
             .hunk_starts
             .iter()
             .find(|&&s| (s as u16) > cur)
         {
-            self.scroll[i] = (next as u16).min(self.max_scroll(i));
+            self.cursor[i] = next as u16;
+            self.ensure_cursor_visible(i);
         }
     }
 
     pub fn prev_hunk(&mut self) {
         let Some(i) = self.selected_idx() else { return };
-        let cur = self.scroll[i];
+        let cur = self.cursor[i];
         if let Some(&prev) = self.laid[i]
             .hunk_starts
             .iter()
             .rev()
             .find(|&&s| (s as u16) < cur)
         {
-            self.scroll[i] = prev as u16;
+            self.cursor[i] = prev as u16;
+            self.ensure_cursor_visible(i);
         }
     }
 
@@ -182,6 +253,7 @@ fn render_body(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
     let i = state.selected_idx();
     let pair = i.map(|i| (&state.diffs[i], &state.laid[i]));
     let scroll = i.map(|i| state.scroll[i]).unwrap_or(0);
+    let cursor = i.map(|i| state.cursor[i] as usize);
 
     render_pane(
         frame,
@@ -191,6 +263,7 @@ fn render_body(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
         pair,
         Side::Base,
         scroll,
+        cursor,
     );
     render_pane(
         frame,
@@ -200,6 +273,7 @@ fn render_body(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
         pair,
         Side::Head,
         scroll,
+        cursor,
     );
 }
 
@@ -247,8 +321,8 @@ fn render_hotkeys(frame: &mut Frame, area: Rect) {
         Span::raw(" hunk  "),
         key("Tab"),
         Span::raw(" panel  "),
-        key("1/2/3"),
-        Span::raw(" jump  "),
+        key("e/E"),
+        Span::raw(" edit head/base  "),
         key("q"),
         Span::raw(" quit"),
     ]);

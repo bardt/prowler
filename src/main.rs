@@ -65,43 +65,34 @@ async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
     let meta = github::fetch_pr(&token, &owner, &repo_name, pr_number).await?;
 
     let desired_path = git::worktree_path(&repo_name, pr_number, &meta.head_sha);
+    let base_path = git::base_worktree_path(&repo_name, pr_number, &meta.base_sha);
     let session = Session::load(&repo_root, pr_number)?;
 
     let reused = desired_path.exists();
 
-    if reused {
-        if session.is_none() {
-            Session {
-                pr_number,
-                branch: meta.head_branch.clone(),
-                worktree_path: desired_path.clone(),
-                base_sha: meta.base_sha.clone(),
-                head_sha: meta.head_sha.clone(),
-            }
-            .save(&repo_root)?;
-        }
-    } else {
-        // Worktree doesn't exist — check if an old session points elsewhere (SHA changed).
-        if let Some(old) = &session {
-            if old.worktree_path.exists() {
-                // A different worktree exists for another SHA; leave it alone.
-            }
-        }
-
+    if !reused {
         git::fetch_pr_head(&repo_root, pr_number)?;
         git::add_worktree(&repo_root, &desired_path, &git::pr_local_ref(pr_number))?;
-
-        Session {
-            pr_number,
-            branch: meta.head_branch.clone(),
-            worktree_path: desired_path.clone(),
-            base_sha: meta.base_sha.clone(),
-            head_sha: meta.head_sha.clone(),
-        }
-        .save(&repo_root)?;
     }
 
     git::ensure_sha(&repo_root, &meta.base_sha)?;
+
+    if !base_path.exists() {
+        git::add_worktree(&repo_root, &base_path, &meta.base_sha)?;
+    }
+
+    Session {
+        pr_number,
+        branch: meta.head_branch.clone(),
+        worktree_path: desired_path.clone(),
+        base_worktree_path: base_path.clone(),
+        base_sha: meta.base_sha.clone(),
+        head_sha: meta.head_sha.clone(),
+    }
+    .save(&repo_root)?;
+
+    let _ = session;
+
     let diffs = diff::compute_diffs(&repo_root, &desired_path, &meta.base_sha, &meta.files)?;
 
     if json {
@@ -112,6 +103,7 @@ async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
             "base_sha": meta.base_sha,
             "head_sha": meta.head_sha,
             "worktree": desired_path,
+            "base_worktree": base_path,
             "reused": reused,
             "files": diffs,
         });
@@ -119,7 +111,7 @@ async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    tui::run(meta, diffs)
+    tui::run(meta, diffs, desired_path, base_path)
 }
 
 fn do_cleanup(repo_root: &std::path::Path, pr_number: u64) -> Result<()> {
@@ -134,6 +126,13 @@ fn do_cleanup(repo_root: &std::path::Path, pr_number: u64) -> Result<()> {
                 println!("Removed worktree at {}", s.worktree_path.display());
             } else {
                 println!("Worktree path no longer exists, skipping removal.");
+            }
+            if !s.base_worktree_path.as_os_str().is_empty() && s.base_worktree_path.exists() {
+                git::remove_worktree(repo_root, &s.base_worktree_path)?;
+                println!(
+                    "Removed base worktree at {}",
+                    s.base_worktree_path.display()
+                );
             }
             Session::delete(repo_root, pr_number)?;
             println!("Cleaned up session for PR #{pr_number}.");

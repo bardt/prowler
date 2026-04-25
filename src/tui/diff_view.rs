@@ -25,6 +25,8 @@ pub enum Cell {
 pub struct Row {
     pub base: Cell,
     pub head: Cell,
+    pub base_line: Option<u32>,
+    pub head_line: Option<u32>,
 }
 
 pub struct LaidOutDiff {
@@ -42,7 +44,12 @@ impl LaidOutDiff {
             rows.push(Row {
                 base: Cell::HunkHeader(hunk.header.clone()),
                 head: Cell::HunkHeader(hunk.header.clone()),
+                base_line: None,
+                head_line: None,
             });
+
+            let (mut old_line, mut new_line) =
+                parse_hunk_header(&hunk.header).unwrap_or((1, 1));
 
             let lines = &hunk.lines;
             let mut i = 0;
@@ -52,38 +59,53 @@ impl LaidOutDiff {
                         rows.push(Row {
                             base: Cell::Context(t.clone()),
                             head: Cell::Context(t.clone()),
+                            base_line: Some(old_line),
+                            head_line: Some(new_line),
                         });
+                        old_line += 1;
+                        new_line += 1;
                         i += 1;
                     }
                     DiffLine::Moved(t) => {
                         rows.push(Row {
                             base: Cell::Moved(t.clone()),
                             head: Cell::Moved(t.clone()),
+                            base_line: Some(old_line),
+                            head_line: Some(new_line),
                         });
+                        old_line += 1;
+                        new_line += 1;
                         i += 1;
                     }
                     DiffLine::Removed(_) | DiffLine::Added(_) => {
                         let mut removed = Vec::new();
                         while let Some(DiffLine::Removed(t)) = lines.get(i) {
-                            removed.push(t.clone());
+                            removed.push((t.clone(), old_line));
+                            old_line += 1;
                             i += 1;
                         }
                         let mut added = Vec::new();
                         while let Some(DiffLine::Added(t)) = lines.get(i) {
-                            added.push(t.clone());
+                            added.push((t.clone(), new_line));
+                            new_line += 1;
                             i += 1;
                         }
                         let n = removed.len().max(added.len());
                         for k in 0..n {
-                            let base = removed
+                            let (base, base_line) = removed
                                 .get(k)
-                                .map(|t| Cell::Removed(t.clone()))
-                                .unwrap_or(Cell::Empty);
-                            let head = added
+                                .map(|(t, l)| (Cell::Removed(t.clone()), Some(*l)))
+                                .unwrap_or((Cell::Empty, None));
+                            let (head, head_line) = added
                                 .get(k)
-                                .map(|t| Cell::Added(t.clone()))
-                                .unwrap_or(Cell::Empty);
-                            rows.push(Row { base, head });
+                                .map(|(t, l)| (Cell::Added(t.clone()), Some(*l)))
+                                .unwrap_or((Cell::Empty, None));
+                            rows.push(Row {
+                                base,
+                                head,
+                                base_line,
+                                head_line,
+                            });
                         }
                     }
                 }
@@ -94,6 +116,16 @@ impl LaidOutDiff {
     }
 }
 
+/// Parse `@@ -10,5 +12,7 @@` → `(10, 12)`.
+fn parse_hunk_header(header: &str) -> Option<(u32, u32)> {
+    let rest = header.strip_prefix("@@ -")?;
+    let (old_part, after) = rest.split_once(' ')?;
+    let new_part = after.strip_prefix('+')?.split(' ').next()?;
+    let old_start: u32 = old_part.split(',').next()?.parse().ok()?;
+    let new_start: u32 = new_part.split(',').next()?.parse().ok()?;
+    Some((old_start, new_start))
+}
+
 pub fn render_pane(
     frame: &mut Frame,
     area: Rect,
@@ -102,6 +134,7 @@ pub fn render_pane(
     diff: Option<(&FileDiff, &LaidOutDiff)>,
     side: Side,
     scroll: u16,
+    cursor: Option<usize>,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -118,12 +151,14 @@ pub fn render_pane(
             let syntax_ref = syn.syntax_for(&file.path);
             laid.rows
                 .iter()
-                .map(|row| {
+                .enumerate()
+                .map(|(idx, row)| {
                     let cell = match side {
                         Side::Base => &row.base,
                         Side::Head => &row.head,
                     };
-                    render_cell(cell, syntax_ref)
+                    let active = Some(idx) == cursor;
+                    with_gutter(render_cell(cell, syntax_ref), active)
                 })
                 .collect()
         }
@@ -131,6 +166,23 @@ pub fn render_pane(
 
     let para = Paragraph::new(lines).block(block).scroll((scroll, 0));
     frame.render_widget(para, area);
+}
+
+fn with_gutter(line: Line<'_>, active: bool) -> Line<'_> {
+    let marker = if active {
+        Span::styled(
+            "\u{25B6}",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::raw(" ")
+    };
+    let mut spans = Vec::with_capacity(line.spans.len() + 1);
+    spans.push(marker);
+    spans.extend(line.spans);
+    Line::from(spans)
 }
 
 #[derive(Clone, Copy)]

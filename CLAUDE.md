@@ -120,7 +120,7 @@ Toggle local panel with `L`.
 
 ## Current milestone
 
-**M6 — Editor handoff**
+**M7 — Viewed state + session persistence**
 
 ## Milestones overview
 
@@ -131,10 +131,8 @@ Toggle local panel with `L`.
 | M3 | Diff data model | ✅ |
 | M4 | Basic TUI shell | ✅ |
 | M5 | Diff rendering | ✅ |
-| M6 | Editor handoff | 🔲 next |
-| M5 | Diff rendering | 🔲 |
-| M6 | Editor handoff | 🔲 |
-| M7 | Viewed state + session persistence | 🔲 |
+| M6 | Editor handoff | ✅ |
+| M7 | Viewed state + session persistence | 🔲 next |
 | M8 | Inline comments (read) | 🔲 |
 | M9 | Inline comments (post) | 🔲 |
 | M10 | Local diff panel | 🔲 |

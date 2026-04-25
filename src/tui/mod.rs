@@ -1,17 +1,25 @@
 mod diff_view;
+mod editor;
 mod review;
 mod syntax;
 
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::diff::FileDiff;
 use crate::github::PrMetadata;
+use crate::tui::diff_view::Side;
 
-pub fn run(meta: PrMetadata, diffs: Vec<FileDiff>) -> Result<()> {
+pub fn run(
+    meta: PrMetadata,
+    diffs: Vec<FileDiff>,
+    head_worktree: PathBuf,
+    base_worktree: PathBuf,
+) -> Result<()> {
     let mut terminal = ratatui::init();
-    let result = event_loop(&mut terminal, meta, diffs);
+    let result = event_loop(&mut terminal, meta, diffs, head_worktree, base_worktree);
     ratatui::restore();
     result
 }
@@ -20,8 +28,10 @@ fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     meta: PrMetadata,
     diffs: Vec<FileDiff>,
+    head_worktree: PathBuf,
+    base_worktree: PathBuf,
 ) -> Result<()> {
-    let mut state = review::ReviewState::new(meta, diffs);
+    let mut state = review::ReviewState::new(meta, diffs, head_worktree, base_worktree);
 
     loop {
         terminal
@@ -47,7 +57,24 @@ fn event_loop(
             KeyCode::Char('k') | KeyCode::Up => state.move_up(),
             KeyCode::Char(']') => state.next_hunk(),
             KeyCode::Char('[') => state.prev_hunk(),
+            KeyCode::Char('e') => open_in_editor(terminal, &state, Side::Head)?,
+            KeyCode::Char('E') => open_in_editor(terminal, &state, Side::Base)?,
             _ => {}
         }
     }
+}
+
+fn open_in_editor(
+    terminal: &mut ratatui::DefaultTerminal,
+    state: &review::ReviewState,
+    side: Side,
+) -> Result<()> {
+    let Some(target) = state.editor_target(side) else {
+        return Ok(());
+    };
+    ratatui::restore();
+    let result = editor::open(&target.file, target.line);
+    *terminal = ratatui::init();
+    terminal.clear().ok();
+    result
 }

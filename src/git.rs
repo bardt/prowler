@@ -14,10 +14,18 @@ pub fn prune_worktrees(repo_root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Canonical worktree path for a PR: `/tmp/prowler-{repo}-{pr}-{short_sha}`.
+/// Canonical HEAD worktree path: `/tmp/prowler-{repo}-{pr}-{short_sha}`.
 pub fn worktree_path(repo_name: &str, pr_number: u64, head_sha: &str) -> PathBuf {
     let short_sha = &head_sha[..head_sha.len().min(7)];
     PathBuf::from(format!("/tmp/prowler-{repo_name}-{pr_number}-{short_sha}"))
+}
+
+/// Canonical BASE worktree path: `/tmp/prowler-{repo}-{pr}-base-{short_sha}`.
+pub fn base_worktree_path(repo_name: &str, pr_number: u64, base_sha: &str) -> PathBuf {
+    let short_sha = &base_sha[..base_sha.len().min(7)];
+    PathBuf::from(format!(
+        "/tmp/prowler-{repo_name}-{pr_number}-base-{short_sha}"
+    ))
 }
 
 /// Fetch the PR head ref so the branch is available for worktree creation.

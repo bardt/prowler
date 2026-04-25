@@ -7,6 +7,8 @@ pub struct Session {
     pub pr_number: u64,
     pub branch: String,
     pub worktree_path: PathBuf,
+    #[serde(default)]
+    pub base_worktree_path: PathBuf,
     pub base_sha: String,
     pub head_sha: String,
 }

@@ -7,6 +7,8 @@ use std::process::Command;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileDiff {
     pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_path: Option<String>,
     pub hunks: Vec<Hunk>,
     pub added: usize,
     pub removed: usize,
@@ -56,7 +58,9 @@ fn diff_file(
     } else {
         head_content(worktree_path, &file.path)?
     };
-    Ok(diff_texts(&file.path, &base_content, &head_content))
+    let mut diff = diff_texts(&file.path, &base_content, &head_content);
+    diff.previous_path = file.previous_path.clone();
+    Ok(diff)
 }
 
 fn base_content(repo_root: &Path, base_sha: &str, path: &str) -> Result<String> {
@@ -126,6 +130,7 @@ fn diff_texts(path: &str, old: &str, new: &str) -> FileDiff {
 
     FileDiff {
         path: path.to_owned(),
+        previous_path: None,
         hunks,
         added: total_added,
         removed: total_removed,
