@@ -164,9 +164,6 @@ new milestone.
   and inject either the real `Octocrab`-backed impl or a `MockGitHubClient`
   returning canned responses. Test handlers like `post_comment` /
   `submit_review` then become drivable end-to-end.
-- **Use `Enter` as fold/unfold in the tree view.** Currently `Enter` expands/collapses
-  comment threads in the diff; reuse the same key as the fold/unfold action in the file
-  tree panel for consistency.
 - **PR state marker in title.** Show open/draft/merged/closed state next to the PR
   title (e.g. a colored badge or single-character glyph) so the reviewer can tell at a
   glance what state the PR is in.

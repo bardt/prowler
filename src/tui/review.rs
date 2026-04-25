@@ -798,7 +798,13 @@ pub fn apply_key(state: &mut ReviewState, key: KeyCode) -> bool {
         KeyCode::Char('v') => state.toggle_viewed(),
         KeyCode::Char('s') => state.toggle_skipped(),
         KeyCode::Char(' ') => state.toggle_folder(),
-        KeyCode::Enter => state.toggle_thread(),
+        KeyCode::Enter => match state.focus {
+            // Files panel: Enter folds/unfolds the folder under the cursor.
+            Focus::Files if state.cursor_on_folder() => state.toggle_folder(),
+            // Diff panes: Enter expands/collapses the comment thread under the cursor.
+            Focus::Base | Focus::Head => state.toggle_thread(),
+            _ => {}
+        },
         KeyCode::Char('n') => state.goto_next_thread(),
         KeyCode::Char('N') => state.goto_prev_thread(),
         _ => {}
@@ -1062,7 +1068,7 @@ fn render_hotkeys(frame: &mut Frame, area: Rect, state: &ReviewState) {
         Focus::Files => {
             groups.push(("j/k", " move  "));
             if state.cursor_on_folder() {
-                groups.push(("Space", " fold  "));
+                groups.push(("Enter/Space", " fold  "));
             } else {
                 groups.push(("v/s", " view/skip  "));
             }
@@ -1354,6 +1360,47 @@ mod tests {
         assert!(joined.contains("BASE"), "base pane title");
         assert!(joined.contains("HEAD"), "head pane title");
         assert!(joined.contains("src/"), "file tree should show the folder row");
+    }
+
+    #[test]
+    fn enter_folds_folder_when_focus_is_files() {
+        let mut s = state(&["src/a.rs", "src/b.rs"], vec![]);
+        // Move cursor up onto the folder row.
+        apply_key(&mut s, KeyCode::Char('k'));
+        assert!(s.cursor_on_folder());
+        let visible_before = s.visible_rows.len();
+        apply_key(&mut s, KeyCode::Enter);
+        assert!(
+            s.visible_rows.len() < visible_before,
+            "Enter on a folder row in Files focus should collapse it"
+        );
+    }
+
+    #[test]
+    fn enter_does_not_toggle_thread_when_focus_is_files() {
+        // Even if the diff cursor would be on a thread row, Enter routes to
+        // folder-toggle when focus is Files.
+        let t = thread("T1", "a.rs", 1, "hi");
+        let mut s = state(&["a.rs"], vec![t]);
+        // Walk diff cursor onto a thread row, but stay focused on Files.
+        let i = s.selected_file_idx().unwrap();
+        let mut steps = 0;
+        while s.cursor[i] < 50 && !s.cursor_on_thread() {
+            // Manually advance diff cursor without changing focus.
+            s.cursor[i] += 1;
+            steps += 1;
+            if steps > 50 {
+                break;
+            }
+        }
+        assert_eq!(s.focus, Focus::Files);
+        let rows_before = s.laid[i].rows.len();
+        apply_key(&mut s, KeyCode::Enter);
+        assert_eq!(
+            s.laid[i].rows.len(),
+            rows_before,
+            "Enter under Files focus must not expand a thread"
+        );
     }
 
     #[test]
