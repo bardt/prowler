@@ -70,3 +70,27 @@ state.
 direction for divergence.
 
 ---
+
+## Collapsible comment threads (2026-04-26)
+
+**Choice:** Threads default to collapsed (single `▸ N comments • @author: …`
+row); `Enter` toggles. State lives in `ReviewState.expanded_threads:
+HashSet<String>` keyed by GraphQL thread node ID. New threads (those that
+appear on `apply_refresh` but weren't in the previous snapshot) auto-expand so
+the user sees what they just posted.
+
+**Persistence:** none — collapsed/expanded state is in-memory only and resets
+on prowler restart. Storing in `Session` would also work but adds churn for a
+mostly-ergonomic preference. Revisit if users complain.
+
+**Cursor behaviour on toggle:** the layout rebuild keeps the cursor at the
+same numeric row index. When collapsing, cursor stays on the (now-summary)
+thread row. When expanding, cursor lands on the thread's header row. Rows in
+later threads / hunks shift in either direction; users may need to scroll.
+Acceptable for v1.
+
+**Preview width:** `wrap_width - 40` chars of the root comment's first line,
+ellipsised. The 40-char reserve covers the `▸ N comments • @author: ` prefix
+on a typical pane; if it's too tight, tune later.
+
+---

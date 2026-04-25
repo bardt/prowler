@@ -159,9 +159,6 @@ new milestone.
   (GitHub marks them outdated when the head moves). They're still meaningful — show
   them somewhere (file-level pinned panel, or anchored to the original line on the
   base side) rather than silently discarding.
-- **Collapse/expand threads.** Spec calls for `Enter` to toggle a thread; today every
-  thread is fully expanded. Add per-thread collapsed state, default to collapsed
-  (one-line summary), expand the thread under the cursor on `Enter`.
 - **Status feedback for async syncs (`v`, `s`).** Viewed-state sync uses
   `tokio::spawn` fire-and-forget — errors only land in `/tmp/prowler-sync.log`.
   To surface them in the UI, add an `mpsc::UnboundedSender<StatusMessage>` to

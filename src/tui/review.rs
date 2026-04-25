@@ -4,6 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -59,6 +60,9 @@ pub struct ReviewState {
     threads_by_file: Vec<Vec<CommentThread>>,
     /// Last pane content width used to lay out diffs (for comment wrapping).
     last_layout_width: u16,
+    /// Thread IDs currently expanded. Anything not in here renders as a one-row
+    /// `CollapsedThread`. Newly-posted threads are auto-added on `apply_refresh`.
+    expanded_threads: HashSet<String>,
 }
 
 /// Default wrap width used before we've measured the actual pane (e.g. on first paint).
@@ -72,6 +76,7 @@ fn build_layout(
     diffs: &[FileDiff],
     threads_by_file: &[Vec<CommentThread>],
     pane_width: u16,
+    expanded: &HashSet<String>,
 ) -> Vec<LaidOutDiff> {
     let wrap_width = pane_width
         .saturating_sub(PANE_CHROME_COLS)
@@ -79,7 +84,7 @@ fn build_layout(
     diffs
         .iter()
         .zip(threads_by_file)
-        .map(|(d, t)| LaidOutDiff::from_file(d, t, wrap_width))
+        .map(|(d, t)| LaidOutDiff::from_file(d, t, wrap_width, expanded))
         .collect()
 }
 
@@ -105,7 +110,8 @@ impl ReviewState {
                 threads_by_file[idx].push(thread);
             }
         }
-        let laid = build_layout(&diffs, &threads_by_file, DEFAULT_WRAP_WIDTH);
+        let expanded_threads: HashSet<String> = HashSet::new();
+        let laid = build_layout(&diffs, &threads_by_file, DEFAULT_WRAP_WIDTH, &expanded_threads);
         let scroll = vec![0; diffs.len()];
         let cursor = vec![0; diffs.len()];
         let file_tree = FileTree::build(&diffs);
@@ -135,6 +141,7 @@ impl ReviewState {
             status: None,
             threads_by_file,
             last_layout_width: DEFAULT_WRAP_WIDTH,
+            expanded_threads,
         }
     }
 
@@ -145,7 +152,36 @@ impl ReviewState {
             return;
         }
         self.last_layout_width = content_width;
-        self.laid = build_layout(&self.diffs, &self.threads_by_file, content_width);
+        self.relayout();
+    }
+
+    fn relayout(&mut self) {
+        self.laid = build_layout(
+            &self.diffs,
+            &self.threads_by_file,
+            self.last_layout_width,
+            &self.expanded_threads,
+        );
+    }
+
+    /// Toggle the expansion state of the comment thread under the cursor.
+    /// No-op when the cursor is not on a thread row.
+    pub fn toggle_thread(&mut self) {
+        let Some(i) = self.selected_idx() else {
+            return;
+        };
+        let cur = self.cursor[i] as usize;
+        let Some(thread_id) = self.laid[i]
+            .rows
+            .get(cur)
+            .and_then(|r| r.thread_id.clone())
+        else {
+            return;
+        };
+        if !self.expanded_threads.remove(&thread_id) {
+            self.expanded_threads.insert(thread_id);
+        }
+        self.relayout();
     }
 
     pub fn set_status(&mut self, text: impl Into<String>, kind: StatusKind) {
@@ -211,9 +247,20 @@ impl ReviewState {
     }
 
     /// Replace metadata + threads after a refetch and rebuild the laid-out diff.
-    /// Cursor / scroll preserved by row index.
+    /// Newly-appearing threads (e.g. one the user just posted) are auto-expanded
+    /// so the caller doesn't need to hunt them down.
     pub fn apply_refresh(&mut self, meta: PrMetadata, threads: Vec<CommentThread>) {
         self.meta = meta;
+        let known: HashSet<String> = self
+            .threads_by_file
+            .iter()
+            .flat_map(|tt| tt.iter().map(|t| t.id.clone()))
+            .collect();
+        for thread in &threads {
+            if !known.contains(&thread.id) {
+                self.expanded_threads.insert(thread.id.clone());
+            }
+        }
         self.set_threads(threads);
     }
 
@@ -229,7 +276,7 @@ impl ReviewState {
             }
         }
         self.threads_by_file = threads_by_file;
-        self.laid = build_layout(&self.diffs, &self.threads_by_file, self.last_layout_width);
+        self.relayout();
     }
 
     pub fn pr_number(&self) -> u64 {
@@ -698,6 +745,7 @@ fn render_hotkeys(frame: &mut Frame, area: Rect, state: &ReviewState) {
             groups.push(("j/k", " scroll  "));
             groups.push(("]/[", " hunk  "));
             if state.cursor_on_thread() {
+                groups.push(("Enter", " expand  "));
                 groups.push(("r", " reply  "));
             } else if state.cursor_on_code_line() {
                 groups.push(("e/E", " edit  "));

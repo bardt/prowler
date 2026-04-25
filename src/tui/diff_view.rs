@@ -4,6 +4,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
+use std::collections::HashSet;
+
 use crate::diff::{DiffLine, FileDiff};
 use crate::github::{CommentSide, CommentThread};
 use crate::tui::syntax;
@@ -31,6 +33,8 @@ pub enum Cell {
     CommentBody(String),
     /// Thread terminator: `└`.
     CommentEnd,
+    /// Single-row summary of a collapsed thread: `▸ 3 comments • @alice: preview`.
+    CollapsedThread { text: String, has_pending: bool },
 }
 
 #[derive(Clone)]
@@ -50,7 +54,12 @@ pub struct LaidOutDiff {
 }
 
 impl LaidOutDiff {
-    pub fn from_file(file: &FileDiff, threads: &[CommentThread], wrap_width: usize) -> Self {
+    pub fn from_file(
+        file: &FileDiff,
+        threads: &[CommentThread],
+        wrap_width: usize,
+        expanded: &HashSet<String>,
+    ) -> Self {
         let mut rows = Vec::new();
         let mut hunk_starts = Vec::new();
 
@@ -79,7 +88,7 @@ impl LaidOutDiff {
                             head_line: Some(new_line),
                             thread_id: None,
                         });
-                        attach_threads(&mut rows, threads, Some(old_line), Some(new_line), wrap_width);
+                        attach_threads(&mut rows, threads, Some(old_line), Some(new_line), wrap_width, expanded);
                         old_line += 1;
                         new_line += 1;
                         i += 1;
@@ -92,7 +101,7 @@ impl LaidOutDiff {
                             head_line: Some(new_line),
                             thread_id: None,
                         });
-                        attach_threads(&mut rows, threads, Some(old_line), Some(new_line), wrap_width);
+                        attach_threads(&mut rows, threads, Some(old_line), Some(new_line), wrap_width, expanded);
                         old_line += 1;
                         new_line += 1;
                         i += 1;
@@ -127,7 +136,7 @@ impl LaidOutDiff {
                                 head_line,
                                 thread_id: None,
                             });
-                            attach_threads(&mut rows, threads, base_line, head_line, wrap_width);
+                            attach_threads(&mut rows, threads, base_line, head_line, wrap_width, expanded);
                         }
                     }
                 }
@@ -147,6 +156,7 @@ fn attach_threads(
     base_line: Option<u32>,
     head_line: Option<u32>,
     wrap_width: usize,
+    expanded: &HashSet<String>,
 ) {
     for thread in threads {
         let matches = match thread.side {
@@ -154,6 +164,18 @@ fn attach_threads(
             CommentSide::Head => head_line == Some(thread.line),
         };
         if !matches {
+            continue;
+        }
+        if !expanded.contains(&thread.id) {
+            push_comment_row(
+                rows,
+                thread.side,
+                Cell::CollapsedThread {
+                    text: collapsed_summary(thread, wrap_width),
+                    has_pending: thread.comments.iter().any(|c| c.is_pending),
+                },
+                &thread.id,
+            );
             continue;
         }
         for (idx, comment) in thread.comments.iter().enumerate() {
@@ -244,6 +266,40 @@ fn wrap_line(text: &str, width: usize) -> Vec<String> {
     }
     if out.is_empty() {
         out.push(String::new());
+    }
+    out
+}
+
+fn collapsed_summary(thread: &CommentThread, wrap_width: usize) -> String {
+    let count = thread.comments.len();
+    let preview_source = thread
+        .comments
+        .first()
+        .map(|c| c.body.lines().next().unwrap_or(""))
+        .unwrap_or("");
+    let preview = take_chars(preview_source, wrap_width.saturating_sub(40));
+    let author = thread
+        .comments
+        .first()
+        .map(|c| c.author.as_str())
+        .unwrap_or("?");
+    if count == 1 {
+        if preview.is_empty() {
+            format!("@{author}")
+        } else {
+            format!("@{author}: {preview}")
+        }
+    } else if preview.is_empty() {
+        format!("{count} comments by @{author}")
+    } else {
+        format!("{count} comments \u{2022} @{author}: {preview}")
+    }
+}
+
+fn take_chars(s: &str, n: usize) -> String {
+    let mut out: String = s.chars().take(n).collect();
+    if s.chars().count() > n {
+        out.push('\u{2026}');
     }
     out
 }
@@ -393,6 +449,27 @@ fn render_cell<'a>(cell: &'a Cell, syntax: &syntect::parsing::SyntaxReference) -
             "\u{2514}",
             Style::default().fg(Color::Yellow),
         )),
+        Cell::CollapsedThread { text, has_pending } => {
+            let mut spans = vec![
+                Span::styled("\u{25B8} ", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    text.clone(),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ];
+            if *has_pending {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(
+                    "(pending)",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ));
+            }
+            Line::from(spans)
+        }
     }
 }
 
