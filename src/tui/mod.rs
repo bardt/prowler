@@ -92,6 +92,8 @@ fn event_loop(
             KeyCode::Char('S') => submit_review(terminal, &mut state)?,
             KeyCode::Char(' ') => state.toggle_folder(),
             KeyCode::Enter => state.toggle_thread(),
+            KeyCode::Char('n') => state.goto_next_thread(),
+            KeyCode::Char('N') => state.goto_prev_thread(),
             _ => {}
         }
     }

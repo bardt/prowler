@@ -164,9 +164,6 @@ new milestone.
   To surface them in the UI, add an `mpsc::UnboundedSender<StatusMessage>` to
   the spawned task and drain it from the event loop on each tick. The status
   row infrastructure is already in place (`ReviewState::set_status`).
-- **Cross-file comment navigation.** Add `gN` / `gP` (or similar) to jump to the
-  next/prev comment thread across the whole PR — selects the file, scrolls cursor
-  to the thread anchor. Today `]` / `[` only navigate hunks within the current file.
 
 ## Conventions
 

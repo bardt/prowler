@@ -54,6 +54,34 @@ impl FileTree {
         rows
     }
 
+    /// Walk the tree to find the file leaf with the given `diff_idx`. Returns
+    /// the index path from `roots` down through `Folder.children` to the leaf,
+    /// or `None` if not found.
+    pub fn find_file(&self, diff_idx: usize) -> Option<Vec<usize>> {
+        fn walk(nodes: &[TreeNode], path: &mut Vec<usize>, target: usize) -> bool {
+            for (i, node) in nodes.iter().enumerate() {
+                path.push(i);
+                match node {
+                    TreeNode::File(f) if f.diff_idx == target => return true,
+                    TreeNode::Folder(folder) => {
+                        if walk(&folder.children, path, target) {
+                            return true;
+                        }
+                    }
+                    _ => {}
+                }
+                path.pop();
+            }
+            false
+        }
+        let mut path = Vec::new();
+        if walk(&self.roots, &mut path, diff_idx) {
+            Some(path)
+        } else {
+            None
+        }
+    }
+
     pub fn folder_at_mut(&mut self, path: &[usize]) -> Option<&mut FolderNode> {
         let mut nodes: &mut Vec<TreeNode> = &mut self.roots;
         for (i, &idx) in path.iter().enumerate() {

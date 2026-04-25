@@ -94,3 +94,22 @@ ellipsised. The 40-char reserve covers the `▸ N comments • @author: ` prefix
 on a typical pane; if it's too tight, tune later.
 
 ---
+
+## Cross-file comment navigation (2026-04-26)
+
+**Choice:** `n` / `N` jump to next / previous comment thread across the whole
+PR (wraps around). On jump, ancestors of the target file are auto-expanded in
+the file tree so the file row is visible. If focus was on the Files panel,
+it switches to Head so the diff pane is in front (since that's where the
+cursor jumped). The cursor lands on the thread row on whichever side
+(Base/Head pane) the thread is anchored on — but the user may need to switch
+focus to that side themselves to see the diff-side highlight clearly.
+
+**Alternative considered:** `gN` / `gP` two-key sequences. Rejected as too
+fiddly without a leader-key state machine.
+
+**Footer:** doesn't currently advertise `n` / `N`. Always-available cross-file
+navigation feels like vim's `n` / `N` — assumed knowledge for terminal users.
+Reconsider if first-time users miss it.
+
+---

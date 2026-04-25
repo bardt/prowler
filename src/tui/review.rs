@@ -535,6 +535,94 @@ impl ReviewState {
         rows.saturating_sub(visible)
     }
 
+    /// Make the file at `diff_idx` selected in the file panel, expanding any
+    /// collapsed ancestor folders so the file row is visible.
+    fn select_file(&mut self, diff_idx: usize) {
+        let Some(path) = self.file_tree.find_file(diff_idx) else {
+            return;
+        };
+        for i in 1..path.len() {
+            if let Some(folder) = self.file_tree.folder_at_mut(&path[..i]) {
+                folder.collapsed = false;
+            }
+        }
+        self.visible_rows = self.file_tree.visible_rows();
+        let pos = self.visible_rows.iter().position(|r| {
+            matches!(r.item, VisibleItem::File { diff_idx: d, .. } if d == diff_idx)
+        });
+        if let Some(idx) = pos {
+            self.list_state.select(Some(idx));
+        }
+    }
+
+    /// Jump to the next comment-thread row across the whole PR (wraps around).
+    /// Search order: from cursor+1 in the current file, then later files, then
+    /// earlier files, then back to start of current file up to the cursor.
+    pub fn goto_next_thread(&mut self) {
+        if self.diffs.is_empty() {
+            return;
+        }
+        let current_file = self.selected_idx().unwrap_or(0);
+        let current_row = self
+            .selected_idx()
+            .map(|f| self.cursor[f] as usize + 1)
+            .unwrap_or(0);
+        let n = self.diffs.len();
+        for offset in 0..=n {
+            let file_idx = (current_file + offset) % n;
+            let start = if offset == 0 { current_row } else { 0 };
+            let rows = &self.laid[file_idx].rows;
+            if start >= rows.len() {
+                continue;
+            }
+            if let Some(rel) = rows[start..].iter().position(|r| r.thread_id.is_some()) {
+                let target = start + rel;
+                self.select_file(file_idx);
+                self.cursor[file_idx] = target as u16;
+                self.ensure_cursor_visible(file_idx);
+                if self.focus == Focus::Files {
+                    self.focus = Focus::Head;
+                }
+                return;
+            }
+        }
+    }
+
+    /// Jump to the previous comment-thread row across the whole PR (wraps around).
+    pub fn goto_prev_thread(&mut self) {
+        if self.diffs.is_empty() {
+            return;
+        }
+        let current_file = self.selected_idx().unwrap_or(0);
+        let current_row = self
+            .selected_idx()
+            .map(|f| self.cursor[f] as usize)
+            .unwrap_or(0);
+        let n = self.diffs.len();
+        for offset in 0..=n {
+            // Walk backwards: current file then earlier (with wrap).
+            let file_idx = (current_file + n - (offset % n)) % n;
+            let rows = &self.laid[file_idx].rows;
+            let end = if offset == 0 {
+                current_row.min(rows.len())
+            } else {
+                rows.len()
+            };
+            if end == 0 {
+                continue;
+            }
+            if let Some(rel) = rows[..end].iter().rposition(|r| r.thread_id.is_some()) {
+                self.select_file(file_idx);
+                self.cursor[file_idx] = rel as u16;
+                self.ensure_cursor_visible(file_idx);
+                if self.focus == Focus::Files {
+                    self.focus = Focus::Head;
+                }
+                return;
+            }
+        }
+    }
+
     pub fn next_hunk(&mut self) {
         let Some(i) = self.selected_idx() else { return };
         let cur = self.cursor[i];
