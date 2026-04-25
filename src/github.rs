@@ -4,6 +4,7 @@ use octocrab::Octocrab;
 pub struct PrMetadata {
     pub title: String,
     pub base_branch: String,
+    pub head_branch: String,
     pub head_sha: String,
     pub file_count: usize,
 }
@@ -29,6 +30,7 @@ pub async fn fetch_pr(token: &str, owner: &str, repo: &str, pr_number: u64) -> R
         .title
         .with_context(|| format!("PR #{pr_number} has no title"))?;
     let base_branch = pr.base.ref_field;
+    let head_branch = pr.head.ref_field;
     let head_sha = pr.head.sha;
 
     // First page only (up to 30 files). GitHub returns at most 300 files per PR.
@@ -47,6 +49,7 @@ pub async fn fetch_pr(token: &str, owner: &str, repo: &str, pr_number: u64) -> R
     Ok(PrMetadata {
         title,
         base_branch,
+        head_branch,
         head_sha,
         file_count: files_page.items.len(),
     })

@@ -120,14 +120,15 @@ Toggle local panel with `L`.
 
 ## Current milestone
 
-**M2 — Worktree lifecycle**
+**M3 — Diff data model**
 
 ## Milestones overview
 
 | # | Name | Status |
 |---|------|--------|
 | M1 | GitHub auth + PR metadata | ✅ |
-| M2 | Worktree lifecycle | 🔲 next |
+| M2 | Worktree lifecycle | ✅ |
+| M3 | Diff data model | 🔲 next |
 | M3 | Diff data model | 🔲 |
 | M4 | Basic TUI shell | 🔲 |
 | M5 | Diff rendering | 🔲 |
