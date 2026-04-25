@@ -120,21 +120,14 @@ Toggle local panel with `L`.
 
 ## Current milestone
 
-**M1 — GitHub auth + PR metadata**
-
-Parse `--pr` arg with clap. Detect git repo root via git2. Resolve GitHub token
-(`GITHUB_TOKEN` env var → `gh auth token` subprocess fallback). Fetch PR metadata via
-octocrab REST (title, base branch, head SHA, file list). Print to stdout.
-
-Done when: `prowler review --pr 123` prints PR title, base branch, head SHA, and file
-count to stdout.
+**M2 — Worktree lifecycle**
 
 ## Milestones overview
 
 | # | Name | Status |
 |---|------|--------|
-| M1 | GitHub auth + PR metadata | 🔲 next |
-| M2 | Worktree lifecycle | 🔲 |
+| M1 | GitHub auth + PR metadata | ✅ |
+| M2 | Worktree lifecycle | 🔲 next |
 | M3 | Diff data model | 🔲 |
 | M4 | Basic TUI shell | 🔲 |
 | M5 | Diff rendering | 🔲 |
