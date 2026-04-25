@@ -17,5 +17,4 @@ similar    = "2"
 syntect    = { version = "5", default-features = false, features = ["default-fancy"] }
 toml       = "0.8"
 tokio      = { version = "1", features = ["rt-multi-thread", "macros"] }
-urlencoding = "2"
 

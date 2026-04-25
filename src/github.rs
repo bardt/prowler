@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use octocrab::Octocrab;
-use std::collections::HashMap;
+use serde::Deserialize;
 
 pub struct PrFile {
     pub path: String,
@@ -28,189 +28,182 @@ impl PrMetadata {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommentSide {
-    Base, // GitHub "LEFT"
-    Head, // GitHub "RIGHT"
+    Base, // GraphQL "LEFT"
+    Head, // GraphQL "RIGHT"
 }
 
 #[derive(Debug, Clone)]
 pub struct ReviewComment {
-    pub id: u64,
-    pub parent_id: Option<u64>,
     pub author: String,
     pub body: String,
     /// Pre-formatted "YYYY-MM-DD HH:MM".
     pub created_at: String,
-    pub path: String,
-    pub line: u32,
-    pub side: CommentSide,
 }
 
+#[allow(dead_code)] // `id`, `is_resolved`, `is_outdated` are reserved for M9 / future UI.
 #[derive(Debug, Clone)]
 pub struct CommentThread {
+    /// Thread node ID — used for `addPullRequestReviewThreadReply` (M9).
+    pub id: String,
     pub path: String,
     pub side: CommentSide,
     pub line: u32,
-    /// Root comment first, replies in chronological order.
+    pub is_resolved: bool,
+    pub is_outdated: bool,
+    /// Root comment first, replies in order.
     pub comments: Vec<ReviewComment>,
 }
 
-pub async fn fetch_pr(token: &str, owner: &str, repo: &str, pr_number: u64) -> Result<PrMetadata> {
-    let octocrab = Octocrab::builder()
-        .personal_token(token.to_owned())
-        .build()
-        .context("failed to build GitHub client")?;
-
-    let pr = octocrab
-        .pulls(owner, repo)
-        .get(pr_number)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to fetch PR #{pr_number} from {owner}/{repo} \
-                 (GET /repos/{owner}/{repo}/pulls/{pr_number})"
-            )
-        })?;
-
-    let title = pr
-        .title
-        .with_context(|| format!("PR #{pr_number} has no title"))?;
-    let node_id = pr
-        .node_id
-        .with_context(|| format!("PR #{pr_number} has no node_id"))?;
-    let base_branch = pr.base.ref_field;
-    let base_sha = pr.base.sha;
-    let head_branch = pr.head.ref_field;
-    let head_sha = pr.head.sha;
-
-    let first_page = octocrab
-        .pulls(owner, repo)
-        .list_files(pr_number)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to list files for PR #{pr_number} from {owner}/{repo} \
-                 (GET /repos/{owner}/{repo}/pulls/{pr_number}/files)"
-            )
-        })?;
-    let all_files = octocrab
-        .all_pages(first_page)
-        .await
-        .with_context(|| format!("failed to paginate files for PR #{pr_number}"))?;
-
-    let files = all_files
-        .into_iter()
-        .map(|entry| PrFile {
-            path: entry.filename,
-            previous_path: entry.previous_filename,
-            status: file_status_str(&entry.status),
-        })
-        .collect();
-
-    Ok(PrMetadata {
-        pr_number,
-        node_id,
-        title,
-        base_branch,
-        base_sha,
-        head_branch,
-        head_sha,
-        files,
-    })
-}
-
-/// Fetch all PR review comments (line-anchored). Comments without a current `line`
-/// (outdated) are dropped — see backlog for handling them.
-pub async fn fetch_comments(
+/// Fetch the PR's metadata, file list, and review threads in a single GraphQL round trip
+/// (with pagination follow-ups for files / threads only when necessary).
+///
+/// File list does NOT include `previous_path` for renames — GraphQL doesn't expose it.
+/// Detect renames locally with `git::detect_renames` and merge into `metadata.files`.
+pub async fn fetch_pr(
     token: &str,
     owner: &str,
     repo: &str,
     pr_number: u64,
-) -> Result<Vec<ReviewComment>> {
+) -> Result<(PrMetadata, Vec<CommentThread>)> {
     let octocrab = Octocrab::builder()
         .personal_token(token.to_owned())
         .build()
         .context("failed to build GitHub client")?;
 
-    let first_page = octocrab
-        .pulls(owner, repo)
-        .list_comments(Some(pr_number))
-        .per_page(100)
-        .send()
+    let response: GqlResponse<PrQueryData> = run_graphql(
+        &octocrab,
+        PR_QUERY,
+        serde_json::json!({
+            "owner": owner,
+            "name": repo,
+            "number": pr_number,
+        }),
+    )
+    .await
+    .with_context(|| format!("failed to fetch PR #{pr_number} from {owner}/{repo}"))?;
+
+    let pr = response
+        .into_data()?
+        .repository
+        .pull_request
+        .context("GraphQL returned null pullRequest")?;
+
+    let mut gql_files = pr.files.nodes;
+    let mut files_page = pr.files.page_info;
+    while files_page.has_next_page {
+        let cursor = files_page
+            .end_cursor
+            .clone()
+            .context("hasNextPage but missing endCursor")?;
+        let next: GqlResponse<FilesPageData> = run_graphql(
+            &octocrab,
+            FILES_PAGE_QUERY,
+            serde_json::json!({
+                "owner": owner,
+                "name": repo,
+                "number": pr_number,
+                "cursor": cursor,
+            }),
+        )
         .await
-        .with_context(|| format!("failed to list review comments for PR #{pr_number}"))?;
-    let all = octocrab
-        .all_pages(first_page)
-        .await
-        .with_context(|| format!("failed to paginate comments for PR #{pr_number}"))?;
-
-    let comments = all
-        .into_iter()
-        .filter_map(|c| {
-            let line = c.line? as u32;
-            let side = match c.side.as_deref() {
-                Some("LEFT") => CommentSide::Base,
-                Some("RIGHT") => CommentSide::Head,
-                _ => return None,
-            };
-            let author = c
-                .user
-                .map(|u| u.login)
-                .unwrap_or_else(|| "unknown".to_string());
-            let created_at = c.created_at.format("%Y-%m-%d %H:%M").to_string();
-            Some(ReviewComment {
-                id: c.id.into_inner(),
-                parent_id: c.in_reply_to_id.map(|i| i.into_inner()),
-                author,
-                body: c.body,
-                created_at,
-                path: c.path,
-                line,
-                side,
-            })
-        })
-        .collect();
-
-    Ok(comments)
-}
-
-/// Group flat comments into threads. Walks `parent_id` to find each comment's root,
-/// then buckets by root id. Threads are sorted by path then line for stable rendering.
-pub fn group_threads(comments: Vec<ReviewComment>) -> Vec<CommentThread> {
-    let parent_map: HashMap<u64, u64> = comments
-        .iter()
-        .filter_map(|c| c.parent_id.map(|p| (c.id, p)))
-        .collect();
-
-    let mut buckets: HashMap<u64, Vec<ReviewComment>> = HashMap::new();
-    for c in comments {
-        let mut root = c.id;
-        while let Some(&p) = parent_map.get(&root) {
-            root = p;
-        }
-        buckets.entry(root).or_default().push(c);
+        .with_context(|| format!("failed to paginate files for PR #{pr_number}"))?;
+        let conn = next
+            .into_data()?
+            .repository
+            .pull_request
+            .context("GraphQL returned null pullRequest while paginating files")?
+            .files;
+        gql_files.extend(conn.nodes);
+        files_page = conn.page_info;
     }
 
-    let mut threads: Vec<CommentThread> = buckets
-        .into_values()
-        .filter_map(|mut group| {
-            group.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-            let root = group.first()?;
+    let mut gql_threads = pr.review_threads.nodes;
+    let mut threads_page = pr.review_threads.page_info;
+    while threads_page.has_next_page {
+        let cursor = threads_page
+            .end_cursor
+            .clone()
+            .context("hasNextPage but missing endCursor")?;
+        let next: GqlResponse<ThreadsPageData> = run_graphql(
+            &octocrab,
+            THREADS_PAGE_QUERY,
+            serde_json::json!({
+                "owner": owner,
+                "name": repo,
+                "number": pr_number,
+                "cursor": cursor,
+            }),
+        )
+        .await
+        .with_context(|| format!("failed to paginate threads for PR #{pr_number}"))?;
+        let conn = next
+            .into_data()?
+            .repository
+            .pull_request
+            .context("GraphQL returned null pullRequest while paginating threads")?
+            .review_threads;
+        gql_threads.extend(conn.nodes);
+        threads_page = conn.page_info;
+    }
+
+    let files = gql_files
+        .into_iter()
+        .map(|f| PrFile {
+            path: f.path,
+            previous_path: None,
+            status: status_from_change_type(&f.change_type).to_owned(),
+        })
+        .collect();
+
+    let metadata = PrMetadata {
+        pr_number,
+        node_id: pr.id,
+        title: pr.title,
+        base_branch: pr.base_ref_name,
+        base_sha: pr.base_ref_oid,
+        head_branch: pr.head_ref_name,
+        head_sha: pr.head_ref_oid,
+        files,
+    };
+
+    let threads = gql_threads
+        .into_iter()
+        .filter_map(|t| {
+            let line = t.line? as u32;
+            let side = match t.diff_side.as_str() {
+                "LEFT" => CommentSide::Base,
+                "RIGHT" => CommentSide::Head,
+                _ => return None,
+            };
+            let comments = t
+                .comments
+                .nodes
+                .into_iter()
+                .map(|c| ReviewComment {
+                    author: c
+                        .author
+                        .map(|a| a.login)
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    body: c.body,
+                    created_at: c.created_at.format("%Y-%m-%d %H:%M").to_string(),
+                })
+                .collect();
             Some(CommentThread {
-                path: root.path.clone(),
-                side: root.side,
-                line: root.line,
-                comments: group,
+                id: t.id,
+                path: t.path,
+                side,
+                line,
+                is_resolved: t.is_resolved,
+                is_outdated: t.is_outdated,
+                comments,
             })
         })
         .collect();
 
-    threads.sort_by(|a, b| a.path.cmp(&b.path).then(a.line.cmp(&b.line)));
-    threads
+    Ok((metadata, threads))
 }
 
 /// Mark or unmark a PR file as viewed via GitHub GraphQL.
-/// REST has no endpoint for this — `markFileAsViewed` / `unmarkFileAsViewed`
-/// are GraphQL-only mutations and require the PR's node ID.
 pub async fn set_viewed(
     token: &str,
     pr_node_id: &str,
@@ -250,17 +243,243 @@ pub async fn set_viewed(
     Ok(())
 }
 
-fn file_status_str(status: &octocrab::models::repos::DiffEntryStatus) -> String {
-    use octocrab::models::repos::DiffEntryStatus::*;
-    match status {
-        Added => "added",
-        Removed => "removed",
-        Modified => "modified",
-        Renamed => "renamed",
-        Copied => "copied",
-        Changed => "changed",
-        Unchanged => "unchanged",
+fn status_from_change_type(ct: &str) -> &'static str {
+    match ct {
+        "ADDED" => "added",
+        "DELETED" => "removed",
+        "MODIFIED" => "modified",
+        "RENAMED" => "renamed",
+        "COPIED" => "copied",
+        "CHANGED" => "changed",
         _ => "unknown",
     }
-    .to_owned()
 }
+
+async fn run_graphql<R: serde::de::DeserializeOwned>(
+    octocrab: &Octocrab,
+    query: &str,
+    variables: serde_json::Value,
+) -> Result<GqlResponse<R>> {
+    let payload = serde_json::json!({
+        "query": query,
+        "variables": variables,
+    });
+    let resp: GqlResponse<R> = octocrab
+        .graphql(&payload)
+        .await
+        .context("GraphQL request failed")?;
+    Ok(resp)
+}
+
+#[derive(Deserialize)]
+struct GqlResponse<T> {
+    data: Option<T>,
+    errors: Option<serde_json::Value>,
+}
+
+impl<T> GqlResponse<T> {
+    fn into_data(self) -> Result<T> {
+        if let Some(errors) = self.errors {
+            bail!("GraphQL errors: {errors}");
+        }
+        self.data.context("GraphQL response missing `data`")
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrQueryData {
+    repository: GqlRepo,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlRepo {
+    pull_request: Option<GqlPullRequest>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlPullRequest {
+    id: String,
+    title: String,
+    base_ref_name: String,
+    base_ref_oid: String,
+    head_ref_name: String,
+    head_ref_oid: String,
+    files: GqlFilesConn,
+    review_threads: GqlThreadsConn,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlFilesConn {
+    nodes: Vec<GqlFile>,
+    page_info: PageInfo,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlFile {
+    path: String,
+    change_type: String,
+    // additions/deletions/viewerViewedState aren't used yet but kept in the query
+    // for future use (file-list line counts already come from the diff itself,
+    // and viewerViewedState will seed Session.files when we tackle that backlog item).
+    #[allow(dead_code)]
+    additions: u64,
+    #[allow(dead_code)]
+    deletions: u64,
+    #[allow(dead_code)]
+    viewer_viewed_state: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PageInfo {
+    has_next_page: bool,
+    end_cursor: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlThreadsConn {
+    nodes: Vec<GqlThread>,
+    page_info: PageInfo,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlThread {
+    id: String,
+    path: String,
+    line: Option<u32>,
+    diff_side: String,
+    is_resolved: bool,
+    is_outdated: bool,
+    comments: GqlCommentsConn,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlCommentsConn {
+    nodes: Vec<GqlComment>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlComment {
+    author: Option<GqlActor>,
+    body: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Deserialize)]
+struct GqlActor {
+    login: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FilesPageData {
+    repository: FilesPageRepo,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FilesPageRepo {
+    pull_request: Option<FilesPagePr>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FilesPagePr {
+    files: GqlFilesConn,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadsPageData {
+    repository: ThreadsPageRepo,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadsPageRepo {
+    pull_request: Option<ThreadsPagePr>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadsPagePr {
+    review_threads: GqlThreadsConn,
+}
+
+const PR_QUERY: &str = r#"
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      id
+      title
+      baseRefName
+      baseRefOid
+      headRefName
+      headRefOid
+      files(first: 100) {
+        nodes { path additions deletions changeType viewerViewedState }
+        pageInfo { hasNextPage endCursor }
+      }
+      reviewThreads(first: 100) {
+        nodes {
+          id
+          path
+          line
+          diffSide
+          isResolved
+          isOutdated
+          comments(first: 100) {
+            nodes { author { login } body createdAt }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}
+"#;
+
+const FILES_PAGE_QUERY: &str = r#"
+query($owner: String!, $name: String!, $number: Int!, $cursor: String!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      files(first: 100, after: $cursor) {
+        nodes { path additions deletions changeType viewerViewedState }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}
+"#;
+
+const THREADS_PAGE_QUERY: &str = r#"
+query($owner: String!, $name: String!, $number: Int!, $cursor: String!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $cursor) {
+        nodes {
+          id
+          path
+          line
+          diffSide
+          isResolved
+          isOutdated
+          comments(first: 100) {
+            nodes { author { login } body createdAt }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}
+"#;

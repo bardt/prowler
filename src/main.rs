@@ -62,9 +62,7 @@ async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
     session::ensure_excluded(&repo_root)?;
 
     let token = auth::resolve_token().context("could not resolve a GitHub token")?;
-    let meta = github::fetch_pr(&token, &owner, &repo_name, pr_number).await?;
-    let raw_comments = github::fetch_comments(&token, &owner, &repo_name, pr_number).await?;
-    let threads = github::group_threads(raw_comments);
+    let (mut meta, threads) = github::fetch_pr(&token, &owner, &repo_name, pr_number).await?;
 
     let desired_path = git::worktree_path(&repo_name, pr_number, &meta.head_sha);
     let base_path = git::base_worktree_path(&repo_name, pr_number, &meta.base_sha);
@@ -81,6 +79,14 @@ async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
 
     if !base_path.exists() {
         git::add_worktree(&repo_root, &base_path, &meta.base_sha)?;
+    }
+
+    // GraphQL doesn't expose previous_filename for renames — detect locally.
+    let renames = git::detect_renames(&repo_root, &meta.base_sha, &meta.head_sha)?;
+    for file in &mut meta.files {
+        if let Some(old) = renames.get(&file.path) {
+            file.previous_path = Some(old.clone());
+        }
     }
 
     let files = session.map(|s| s.files).unwrap_or_default();
