@@ -1,6 +1,17 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileStatus {
+    #[default]
+    Unviewed,
+    InProgress,
+    Viewed,
+    Skipped,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Session {
@@ -11,6 +22,8 @@ pub struct Session {
     pub base_worktree_path: PathBuf,
     pub base_sha: String,
     pub head_sha: String,
+    #[serde(default)]
+    pub files: HashMap<String, FileStatus>,
 }
 
 impl Session {

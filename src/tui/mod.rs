@@ -10,16 +10,18 @@ use std::time::Duration;
 
 use crate::diff::FileDiff;
 use crate::github::PrMetadata;
+use crate::session::Session;
 use crate::tui::diff_view::Side;
 
 pub fn run(
     meta: PrMetadata,
     diffs: Vec<FileDiff>,
-    head_worktree: PathBuf,
-    base_worktree: PathBuf,
+    session: Session,
+    repo_root: PathBuf,
+    token: String,
 ) -> Result<()> {
     let mut terminal = ratatui::init();
-    let result = event_loop(&mut terminal, meta, diffs, head_worktree, base_worktree);
+    let result = event_loop(&mut terminal, meta, diffs, session, repo_root, token);
     ratatui::restore();
     result
 }
@@ -28,10 +30,11 @@ fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     meta: PrMetadata,
     diffs: Vec<FileDiff>,
-    head_worktree: PathBuf,
-    base_worktree: PathBuf,
+    session: Session,
+    repo_root: PathBuf,
+    token: String,
 ) -> Result<()> {
-    let mut state = review::ReviewState::new(meta, diffs, head_worktree, base_worktree);
+    let mut state = review::ReviewState::new(meta, diffs, session, repo_root, token);
 
     loop {
         terminal
@@ -59,6 +62,8 @@ fn event_loop(
             KeyCode::Char('[') => state.prev_hunk(),
             KeyCode::Char('e') => open_in_editor(terminal, &state, Side::Head)?,
             KeyCode::Char('E') => open_in_editor(terminal, &state, Side::Base)?,
+            KeyCode::Char('v') => state.toggle_viewed(),
+            KeyCode::Char('s') => state.toggle_skipped(),
             _ => {}
         }
     }

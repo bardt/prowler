@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::diff::FileDiff;
 use crate::github::PrMetadata;
+use crate::session::{FileStatus, Session};
 use crate::tui::diff_view::{LaidOutDiff, Side, render_pane};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -28,8 +29,9 @@ pub struct ReviewState {
     /// Cursor row index per file. The marker shown in the diff panes.
     cursor: Vec<u16>,
     last_pane_height: u16,
-    head_worktree: PathBuf,
-    base_worktree: PathBuf,
+    session: Session,
+    repo_root: PathBuf,
+    token: String,
 }
 
 pub struct EditorTarget {
@@ -41,8 +43,9 @@ impl ReviewState {
     pub fn new(
         meta: PrMetadata,
         diffs: Vec<FileDiff>,
-        head_worktree: PathBuf,
-        base_worktree: PathBuf,
+        session: Session,
+        repo_root: PathBuf,
+        token: String,
     ) -> Self {
         let laid = diffs.iter().map(LaidOutDiff::from_file).collect();
         let scroll = vec![0; diffs.len()];
@@ -60,9 +63,77 @@ impl ReviewState {
             scroll,
             cursor,
             last_pane_height: 20,
-            head_worktree,
-            base_worktree,
+            session,
+            repo_root,
+            token,
         }
+    }
+
+    fn file_status(&self, path: &str) -> FileStatus {
+        self.session
+            .files
+            .get(path)
+            .copied()
+            .unwrap_or(FileStatus::Unviewed)
+    }
+
+    fn set_status(&mut self, path: String, status: FileStatus) {
+        let was_viewed = self.file_status(&path) == FileStatus::Viewed;
+        let now_viewed = status == FileStatus::Viewed;
+
+        if status == FileStatus::Unviewed {
+            self.session.files.remove(&path);
+        } else {
+            self.session.files.insert(path.clone(), status);
+        }
+        if let Err(e) = self.session.save(&self.repo_root) {
+            eprintln!("warning: failed to save session: {e:#}");
+        }
+
+        if was_viewed != now_viewed {
+            self.spawn_set_viewed(path, now_viewed);
+        }
+    }
+
+    fn spawn_set_viewed(&self, path: String, viewed: bool) {
+        let token = self.token.clone();
+        let node_id = self.meta.node_id.clone();
+        let pr = self.session.pr_number;
+        tokio::spawn(async move {
+            let result = crate::github::set_viewed(&token, &node_id, &path, viewed).await;
+            let line = match result {
+                Ok(()) => format!("[ok]   PR #{pr} {path} viewed={viewed}\n"),
+                Err(e) => format!("[FAIL] PR #{pr} {path} viewed={viewed}: {e:#}\n"),
+            };
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/prowler-sync.log")
+            {
+                use std::io::Write;
+                let _ = f.write_all(line.as_bytes());
+            }
+        });
+    }
+
+    pub fn toggle_viewed(&mut self) {
+        let Some(i) = self.selected_idx() else { return };
+        let path = self.diffs[i].path.clone();
+        let next = match self.file_status(&path) {
+            FileStatus::Viewed => FileStatus::Unviewed,
+            _ => FileStatus::Viewed,
+        };
+        self.set_status(path, next);
+    }
+
+    pub fn toggle_skipped(&mut self) {
+        let Some(i) = self.selected_idx() else { return };
+        let path = self.diffs[i].path.clone();
+        let next = match self.file_status(&path) {
+            FileStatus::Skipped => FileStatus::Unviewed,
+            _ => FileStatus::Skipped,
+        };
+        self.set_status(path, next);
     }
 
     pub fn editor_target(&self, side: Side) -> Option<EditorTarget> {
@@ -87,8 +158,8 @@ impl ReviewState {
             Side::Head => Path::new(&file.path),
         };
         let root = match side {
-            Side::Base => &self.base_worktree,
-            Side::Head => &self.head_worktree,
+            Side::Base => &self.session.base_worktree_path,
+            Side::Head => &self.session.worktree_path,
         };
 
         Some(EditorTarget {
@@ -282,8 +353,22 @@ fn render_files(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
         .diffs
         .iter()
         .map(|d| {
+            let status = state.file_status(&d.path);
+            let (marker, marker_style) = match status {
+                FileStatus::Unviewed => (" ", Style::default()),
+                FileStatus::InProgress => ("*", Style::default().fg(Color::Cyan)),
+                FileStatus::Viewed => ("\u{2713}", Style::default().fg(Color::Green)),
+                FileStatus::Skipped => ("~", Style::default().fg(Color::Yellow)),
+            };
+            let path_style = if status == FileStatus::Viewed {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default()
+            };
             ListItem::new(Line::from(vec![
-                Span::raw(d.path.clone()),
+                Span::styled(marker, marker_style),
+                Span::raw(" "),
+                Span::styled(d.path.clone(), path_style),
                 Span::raw("  "),
                 Span::styled(format!("+{}", d.added), Style::default().fg(Color::Green)),
                 Span::raw(" "),
@@ -316,13 +401,15 @@ fn render_files(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
 fn render_hotkeys(frame: &mut Frame, area: Rect) {
     let hotkeys = Line::from(vec![
         key("j/k"),
-        Span::raw(" scroll  "),
+        Span::raw(" move  "),
         key("]/["),
         Span::raw(" hunk  "),
         key("Tab"),
         Span::raw(" panel  "),
         key("e/E"),
-        Span::raw(" edit head/base  "),
+        Span::raw(" edit  "),
+        key("v/s"),
+        Span::raw(" view/skip  "),
         key("q"),
         Span::raw(" quit"),
     ]);

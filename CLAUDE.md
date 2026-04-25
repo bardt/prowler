@@ -120,7 +120,7 @@ Toggle local panel with `L`.
 
 ## Current milestone
 
-**M7 — Viewed state + session persistence**
+**M8 — Inline comments (read)**
 
 ## Milestones overview
 
@@ -132,14 +132,25 @@ Toggle local panel with `L`.
 | M4 | Basic TUI shell | ✅ |
 | M5 | Diff rendering | ✅ |
 | M6 | Editor handoff | ✅ |
-| M7 | Viewed state + session persistence | 🔲 next |
-| M8 | Inline comments (read) | 🔲 |
+| M7 | Viewed state + session persistence | ✅ |
+| M8 | Inline comments (read) | 🔲 next |
 | M9 | Inline comments (post) | 🔲 |
 | M10 | Local diff panel | 🔲 |
 | M11 | Dashboard | 🔲 |
 
 Update the **Current milestone** section and the status column above at the start of each
 new milestone.
+
+## Backlog
+
+- **Pull GitHub viewed state on PR open.** Today the sync is push-only: `v` writes to
+  GitHub via the `markFileAsViewed` GraphQL mutation, but we never read back. Open the
+  same PR on a second machine (or after marking files in the web UI) and prowler shows
+  everything as Unviewed. Fetch `pullRequest.files.nodes.viewerViewedState` (GraphQL,
+  enum `VIEWED` / `DISMISSED` / `UNVIEWED`) at startup and seed `Session.files` from it.
+  Note: `DISMISSED` means GitHub auto-cleared a viewed mark because the head changed —
+  we'll likely want to surface that distinctly in the UI rather than treating it as
+  Unviewed.
 
 ## Conventions
 

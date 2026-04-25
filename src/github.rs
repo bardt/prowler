@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use octocrab::Octocrab;
 
 pub struct PrFile {
@@ -9,6 +9,8 @@ pub struct PrFile {
 
 pub struct PrMetadata {
     pub pr_number: u64,
+    /// GraphQL node ID — required for mutations like `markFileAsViewed`.
+    pub node_id: String,
     pub title: String,
     pub base_branch: String,
     pub base_sha: String,
@@ -43,6 +45,9 @@ pub async fn fetch_pr(token: &str, owner: &str, repo: &str, pr_number: u64) -> R
     let title = pr
         .title
         .with_context(|| format!("PR #{pr_number} has no title"))?;
+    let node_id = pr
+        .node_id
+        .with_context(|| format!("PR #{pr_number} has no node_id"))?;
     let base_branch = pr.base.ref_field;
     let base_sha = pr.base.sha;
     let head_branch = pr.head.ref_field;
@@ -72,6 +77,7 @@ pub async fn fetch_pr(token: &str, owner: &str, repo: &str, pr_number: u64) -> R
 
     Ok(PrMetadata {
         pr_number,
+        node_id,
         title,
         base_branch,
         base_sha,
@@ -79,6 +85,48 @@ pub async fn fetch_pr(token: &str, owner: &str, repo: &str, pr_number: u64) -> R
         head_sha,
         files,
     })
+}
+
+/// Mark or unmark a PR file as viewed via GitHub GraphQL.
+/// REST has no endpoint for this — `markFileAsViewed` / `unmarkFileAsViewed`
+/// are GraphQL-only mutations and require the PR's node ID.
+pub async fn set_viewed(
+    token: &str,
+    pr_node_id: &str,
+    file_path: &str,
+    viewed: bool,
+) -> Result<()> {
+    let octocrab = Octocrab::builder()
+        .personal_token(token.to_owned())
+        .build()
+        .context("failed to build GitHub client")?;
+
+    let mutation = if viewed {
+        "markFileAsViewed"
+    } else {
+        "unmarkFileAsViewed"
+    };
+    let query = format!(
+        "mutation($pid: ID!, $path: String!) {{ \
+            {mutation}(input: {{ pullRequestId: $pid, path: $path }}) {{ \
+                clientMutationId \
+            }} \
+        }}"
+    );
+    let payload = serde_json::json!({
+        "query": query,
+        "variables": { "pid": pr_node_id, "path": file_path },
+    });
+
+    let response: serde_json::Value = octocrab
+        .graphql(&payload)
+        .await
+        .with_context(|| format!("GraphQL {mutation} request failed for `{file_path}`"))?;
+
+    if let Some(errors) = response.get("errors") {
+        bail!("GraphQL {mutation} for `{file_path}`: {errors}");
+    }
+    Ok(())
 }
 
 fn file_status_str(status: &octocrab::models::repos::DiffEntryStatus) -> String {

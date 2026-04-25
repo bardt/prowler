@@ -81,17 +81,17 @@ async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
         git::add_worktree(&repo_root, &base_path, &meta.base_sha)?;
     }
 
-    Session {
+    let files = session.map(|s| s.files).unwrap_or_default();
+    let session = Session {
         pr_number,
         branch: meta.head_branch.clone(),
         worktree_path: desired_path.clone(),
         base_worktree_path: base_path.clone(),
         base_sha: meta.base_sha.clone(),
         head_sha: meta.head_sha.clone(),
-    }
-    .save(&repo_root)?;
-
-    let _ = session;
+        files,
+    };
+    session.save(&repo_root)?;
 
     let diffs = diff::compute_diffs(&repo_root, &desired_path, &meta.base_sha, &meta.files)?;
 
@@ -111,7 +111,7 @@ async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    tui::run(meta, diffs, desired_path, base_path)
+    tui::run(meta, diffs, session, repo_root, token)
 }
 
 fn do_cleanup(repo_root: &std::path::Path, pr_number: u64) -> Result<()> {
