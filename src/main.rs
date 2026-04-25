@@ -119,7 +119,7 @@ async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    tui::run(meta, diffs, threads, session, repo_root, token)
+    tui::run(meta, diffs, threads, session, repo_root, token, owner, repo_name)
 }
 
 fn do_cleanup(repo_root: &std::path::Path, pr_number: u64) -> Result<()> {

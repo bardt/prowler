@@ -7,7 +7,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use std::path::{Path, PathBuf};
 
 use crate::diff::FileDiff;
-use crate::github::{CommentThread, PrMetadata};
+use crate::github::{CommentSide, CommentThread, PrMetadata};
 use crate::session::{FileStatus, Session};
 use crate::tui::diff_view::{LaidOutDiff, Side, render_pane};
 
@@ -31,7 +31,9 @@ pub struct ReviewState {
     last_pane_height: u16,
     session: Session,
     repo_root: PathBuf,
-    token: String,
+    pub token: String,
+    pub owner: String,
+    pub repo: String,
 }
 
 pub struct EditorTarget {
@@ -47,6 +49,8 @@ impl ReviewState {
         session: Session,
         repo_root: PathBuf,
         token: String,
+        owner: String,
+        repo: String,
     ) -> Self {
         let mut threads_by_file: Vec<Vec<CommentThread>> = vec![Vec::new(); diffs.len()];
         for thread in threads {
@@ -77,7 +81,51 @@ impl ReviewState {
             session,
             repo_root,
             token,
+            owner,
+            repo,
         }
+    }
+
+    /// Return the GitHub-side anchor (path, side, line) for the row under the cursor,
+    /// preferring HEAD when the row has both lines (Context). Returns None for rows
+    /// with no commentable content (HunkHeader, comment rows, Empty).
+    pub fn comment_target(&self) -> Option<(String, CommentSide, u32)> {
+        let i = self.selected_idx()?;
+        let cur = self.cursor[i] as usize;
+        let row = self.laid[i].rows.get(cur)?;
+        let path = self.diffs[i].path.clone();
+        if let Some(line) = row.head_line {
+            Some((path, CommentSide::Head, line))
+        } else {
+            row.base_line.map(|line| (path, CommentSide::Base, line))
+        }
+    }
+
+    /// Replace threads and rebuild the laid-out diff. Cursor and scroll offsets are
+    /// preserved by row index, but the rows underneath may have shifted (a new
+    /// comment thread inserts rows). That's acceptable — the cursor row identity
+    /// changes silently after a post.
+    pub fn set_threads(&mut self, threads: Vec<CommentThread>) {
+        let mut threads_by_file: Vec<Vec<CommentThread>> = vec![Vec::new(); self.diffs.len()];
+        for thread in threads {
+            if let Some(idx) = self.diffs.iter().position(|d| d.path == thread.path) {
+                threads_by_file[idx].push(thread);
+            }
+        }
+        self.laid = self
+            .diffs
+            .iter()
+            .zip(&threads_by_file)
+            .map(|(d, t)| LaidOutDiff::from_file(d, t))
+            .collect();
+    }
+
+    pub fn pr_number(&self) -> u64 {
+        self.session.pr_number
+    }
+
+    pub fn pr_node_id(&self) -> &str {
+        &self.meta.node_id
     }
 
     fn file_status(&self, path: &str) -> FileStatus {
@@ -421,6 +469,8 @@ fn render_hotkeys(frame: &mut Frame, area: Rect) {
         Span::raw(" edit  "),
         key("v/s"),
         Span::raw(" view/skip  "),
+        key("c"),
+        Span::raw(" comment  "),
         key("q"),
         Span::raw(" quit"),
     ]);

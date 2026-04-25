@@ -120,7 +120,7 @@ Toggle local panel with `L`.
 
 ## Current milestone
 
-**M9 — Inline comments (post)**
+**M10 — Submit review**
 
 ## Milestones overview
 
@@ -134,9 +134,15 @@ Toggle local panel with `L`.
 | M6 | Editor handoff | ✅ |
 | M7 | Viewed state + session persistence | ✅ |
 | M8 | Inline comments (read) | ✅ |
-| M9 | Inline comments (post) | 🔲 next |
-| M10 | Local diff panel | 🔲 |
-| M11 | Dashboard | 🔲 |
+| M9 | Inline comments (post) | ✅ |
+| M10 | Submit review | 🔲 next |
+| M11 | Local diff panel | 🔲 |
+| M12 | Dashboard | 🔲 |
+
+**M10 scope:** A panel listing all comments in the current pending review, with a verdict
+selector (Approve / Comment / Request changes) and an optional summary body. Submits via
+GraphQL `submitPullRequestReview` (or creates the review with `addPullRequestReview` if
+no pending one exists). Without this, M9's `c` accumulates Pending comments forever.
 
 Update the **Current milestone** section and the status column above at the start of each
 new milestone.
@@ -161,6 +167,29 @@ new milestone.
 - **Collapse/expand threads.** Spec calls for `Enter` to toggle a thread; today every
   thread is fully expanded. Add per-thread collapsed state, default to collapsed
   (one-line summary), expand the thread under the cursor on `Enter`.
+- **Reply to existing comment threads.** M9 only handles posting *new* threads via
+  `addPullRequestReviewThread`. Add a keybind (probably `r`) that, when the cursor is
+  on a thread row, calls `addPullRequestReviewThreadReply` against the thread's
+  `id`. The thread node ID is already captured in `CommentThread.id`.
+- **Status feedback for posts.** `c` posts silently — no UI confirmation, errors
+  only appear in `/tmp/prowler-sync.log`. Add a transient status line at the bottom
+  of the TUI (e.g., "Posted ✓" / "Post failed: ...") that auto-clears after a few
+  redraws.
+- **Pending review state indicator on comments.** `addPullRequestReviewThread`
+  without a `pullRequestReviewId` silently creates a draft review under the user's
+  account; comments live there until M10 submits the review. GitHub's web UI labels
+  these "Pending" — we don't. Surface this either via `PullRequestReviewComment.state`
+  (enum includes `PENDING`) or by detecting the comment's parent `pullRequestReview`
+  is the viewer's current pending review. Render with a distinct marker (e.g., dim
+  `(pending)` after the date in the thread header).
+- **Cross-file comment navigation.** Add `gN` / `gP` (or similar) to jump to the
+  next/prev comment thread across the whole PR — selects the file, scrolls cursor
+  to the thread anchor. Today `]` / `[` only navigate hunks within the current file.
+- **Tree-style file panel with folders.** Today the file panel is a flat list of
+  paths. For PRs touching many directories, a collapsible tree (`▶ src/`,
+  `▼ src/tui/`, `  ├ diff_view.rs`, `  └ review.rs`) is much easier to scan. Build
+  a tree from `meta.files`; render with indent + collapse markers; preserve the
+  currently-selected leaf when navigating up/down through folder rows.
 
 ## Conventions
 

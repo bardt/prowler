@@ -203,6 +203,63 @@ pub async fn fetch_pr(
     Ok((metadata, threads))
 }
 
+/// Post a new review thread anchored to a single line on a PR diff.
+/// Uses the `addPullRequestReviewThread` GraphQL mutation with `subjectType: LINE`.
+pub async fn post_thread(
+    token: &str,
+    pr_node_id: &str,
+    path: &str,
+    side: CommentSide,
+    line: u32,
+    body: &str,
+) -> Result<()> {
+    let octocrab = Octocrab::builder()
+        .personal_token(token.to_owned())
+        .build()
+        .context("failed to build GitHub client")?;
+
+    let side_str = match side {
+        CommentSide::Base => "LEFT",
+        CommentSide::Head => "RIGHT",
+    };
+
+    let query = r#"
+mutation($pid: ID!, $path: String!, $line: Int!, $side: DiffSide!, $body: String!) {
+  addPullRequestReviewThread(input: {
+    pullRequestId: $pid,
+    path: $path,
+    line: $line,
+    side: $side,
+    body: $body,
+    subjectType: LINE
+  }) {
+    thread { id }
+  }
+}
+"#;
+
+    let payload = serde_json::json!({
+        "query": query,
+        "variables": {
+            "pid": pr_node_id,
+            "path": path,
+            "line": line,
+            "side": side_str,
+            "body": body,
+        }
+    });
+
+    let response: serde_json::Value = octocrab
+        .graphql(&payload)
+        .await
+        .with_context(|| format!("addPullRequestReviewThread request failed for `{path}:{line}`"))?;
+
+    if let Some(errors) = response.get("errors") {
+        bail!("addPullRequestReviewThread for `{path}:{line}`: {errors}");
+    }
+    Ok(())
+}
+
 /// Mark or unmark a PR file as viewed via GitHub GraphQL.
 pub async fn set_viewed(
     token: &str,
