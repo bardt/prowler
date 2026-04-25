@@ -6,6 +6,9 @@ pub struct PrFile {
     pub path: String,
     pub previous_path: Option<String>,
     pub status: String,
+    /// GitHub's per-viewer viewed state for this file: `VIEWED`, `DISMISSED`, or
+    /// `UNVIEWED`. Used to seed `Session.files` on first open from a new machine.
+    pub viewer_viewed_state: String,
 }
 
 pub struct PrMetadata {
@@ -166,6 +169,7 @@ pub async fn fetch_pr(
             path: f.path,
             previous_path: None,
             status: status_from_change_type(&f.change_type).to_owned(),
+            viewer_viewed_state: f.viewer_viewed_state,
         })
         .collect();
 
@@ -506,14 +510,12 @@ struct GqlFilesConn {
 struct GqlFile {
     path: String,
     change_type: String,
-    // additions/deletions/viewerViewedState aren't used yet but kept in the query
-    // for future use (file-list line counts already come from the diff itself,
-    // and viewerViewedState will seed Session.files when we tackle that backlog item).
+    // additions/deletions are kept in the query for future use (file-list line
+    // counts currently come from the diff itself).
     #[allow(dead_code)]
     additions: u64,
     #[allow(dead_code)]
     deletions: u64,
-    #[allow(dead_code)]
     viewer_viewed_state: String,
 }
 

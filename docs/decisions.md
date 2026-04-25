@@ -48,3 +48,25 @@ hasn't changed. Cursor position is preserved by row index, so the cursor may
 land on a different content row after a resize — acceptable for v1.
 
 ---
+
+## Pull viewed state on PR open (2026-04-26)
+
+**Choice:** On every PR fetch, walk `meta.files` and seed `Session.files` for
+any path that doesn't already have a local entry: if GitHub says `VIEWED`, mark
+it `FileStatus::Viewed` locally; otherwise leave it absent (treated as
+Unviewed). Local entries always win over GitHub state.
+
+**Rationale for local-wins:** if a user marks a file viewed locally and the
+sync to GitHub fails (network blip), the next open should still reflect their
+intent. Locally-set `Skipped` should also survive across opens.
+
+**`DISMISSED` handled as Unviewed.** GitHub returns this when the head SHA
+changed after a viewed-mark, indicating the previous review is stale. We
+silently treat as Unviewed — backlog tracks distinguishing it as a separate
+state.
+
+**No write-back from GitHub.** The fetch only seeds; we never overwrite local
+`Viewed`/`Skipped` based on GitHub saying `UNVIEWED`. That'd be the wrong
+direction for divergence.
+
+---

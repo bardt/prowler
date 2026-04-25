@@ -89,7 +89,14 @@ async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
         }
     }
 
-    let files = session.map(|s| s.files).unwrap_or_default();
+    let mut files = session.map(|s| s.files).unwrap_or_default();
+    // Seed any unknown files from GitHub's per-viewer state. Local state wins —
+    // it reflects user actions that may not have synced yet.
+    for pr_file in &meta.files {
+        if !files.contains_key(&pr_file.path) && pr_file.viewer_viewed_state == "VIEWED" {
+            files.insert(pr_file.path.clone(), session::FileStatus::Viewed);
+        }
+    }
     let session = Session {
         pr_number,
         branch: meta.head_branch.clone(),

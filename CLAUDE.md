@@ -149,14 +149,12 @@ new milestone.
 
 ## Backlog
 
-- **Pull GitHub viewed state on PR open.** Today the sync is push-only: `v` writes to
-  GitHub via the `markFileAsViewed` GraphQL mutation, but we never read back. Open the
-  same PR on a second machine (or after marking files in the web UI) and prowler shows
-  everything as Unviewed. Fetch `pullRequest.files.nodes.viewerViewedState` (GraphQL,
-  enum `VIEWED` / `DISMISSED` / `UNVIEWED`) at startup and seed `Session.files` from it.
-  Note: `DISMISSED` means GitHub auto-cleared a viewed mark because the head changed —
-  we'll likely want to surface that distinctly in the UI rather than treating it as
-  Unviewed.
+- **Distinguish `DISMISSED` viewed state.** `fetch_pr` now seeds `Session.files`
+  from `viewerViewedState` on PR open, but only `VIEWED` is honoured —
+  `DISMISSED` (GitHub auto-cleared a viewed mark because the head moved) is
+  treated identically to `UNVIEWED`. Surface it distinctly (separate
+  `FileStatus::Dismissed`?) so the user notices files that were viewed but
+  invalidated by a force-push.
 - **Render outdated comments.** `fetch_comments` drops comments whose `line` is null
   (GitHub marks them outdated when the head moves). They're still meaningful — show
   them somewhere (file-level pinned panel, or anchored to the original line on the
