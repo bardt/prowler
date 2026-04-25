@@ -206,4 +206,4 @@ new milestone.
 
 ## Design doc
 
-Full design document: `design.md` in the repo root.
+Full design document: `docs/design.md`.
