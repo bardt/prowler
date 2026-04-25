@@ -161,6 +161,14 @@ Concretely:
   directly. Detect the block in a comment body, render distinctly, and add a
   keybind that writes the suggested replacement into the worktree file at the
   thread's anchor line.
+- **Post local hunks as suggestion comments.** The reviewer's natural workflow:
+  open a file via `e`, edit it, see the local hunk in the LOCAL pane, then
+  ship that change as a ` ```suggestion ` block on the corresponding PR line.
+  Add a keybind (e.g. `c` while focused on a LOCAL hunk) that builds a
+  comment body wrapping the new lines in a `suggestion` fence and posts via
+  `addPullRequestReviewThread` with the HEAD line of the hunk as the anchor.
+  Depends on the LOCAL-pane alignment fix above so we know which HEAD line
+  the cursor maps to.
 - **Multi-line comments.** `c` currently anchors to a single line. Add a "selection
   mode" (e.g. `V` to start, then `j/k` to extend, then `c`) that posts via
   `addPullRequestReviewThread` with `startLine` + `startSide` + `line`.
@@ -172,6 +180,17 @@ new milestone.
 
 ## Backlog
 
+- **Align LOCAL pane rows with HEAD pane.** Today the LOCAL pane is rendered as a
+  unified diff (single column with `+`/`-` markers, walking the local hunks in
+  order). HEAD is rendered as side-by-side rows where row Y corresponds to a
+  specific line number on either side. The two are unrelated — line 42 in HEAD
+  may sit at row 12, while the LOCAL diff for line 42 sits at some unrelated
+  row. To align: lay out LOCAL using the HEAD pane's row geometry — for each
+  HEAD row with `head_line == N`, look up local-diff content anchored at line
+  N and render it in the same row (or blank). Lines that don't appear in HEAD
+  (e.g. locally-deleted) get inserted as extra rows on both sides. This
+  enables the "convert hunk to suggestion" feature in M13 to map cleanly: the
+  cursor row's HEAD line is the anchor for the suggestion comment.
 - **Mockable GitHub client for end-to-end tests.** The headless harness
   (state + render + event layers) is in place — `apply_key` is pure,
   `ReviewState::for_test` builds a state from fixtures, and `TestBackend`
