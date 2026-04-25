@@ -55,6 +55,32 @@ pub struct ReviewState {
     file_tree: FileTree,
     visible_rows: Vec<VisibleRow>,
     status: Option<Status>,
+    /// Threads grouped by file index, kept so we can re-layout on terminal resize.
+    threads_by_file: Vec<Vec<CommentThread>>,
+    /// Last pane content width used to lay out diffs (for comment wrapping).
+    last_layout_width: u16,
+}
+
+/// Default wrap width used before we've measured the actual pane (e.g. on first paint).
+const DEFAULT_WRAP_WIDTH: u16 = 80;
+
+/// Columns consumed by per-row chrome inside a pane: 1 gutter + `│ ` (2) + 2 borders.
+const PANE_CHROME_COLS: u16 = 5;
+const MIN_WRAP_WIDTH: u16 = 20;
+
+fn build_layout(
+    diffs: &[FileDiff],
+    threads_by_file: &[Vec<CommentThread>],
+    pane_width: u16,
+) -> Vec<LaidOutDiff> {
+    let wrap_width = pane_width
+        .saturating_sub(PANE_CHROME_COLS)
+        .max(MIN_WRAP_WIDTH) as usize;
+    diffs
+        .iter()
+        .zip(threads_by_file)
+        .map(|(d, t)| LaidOutDiff::from_file(d, t, wrap_width))
+        .collect()
 }
 
 pub struct EditorTarget {
@@ -79,11 +105,7 @@ impl ReviewState {
                 threads_by_file[idx].push(thread);
             }
         }
-        let laid: Vec<LaidOutDiff> = diffs
-            .iter()
-            .zip(&threads_by_file)
-            .map(|(d, t)| LaidOutDiff::from_file(d, t))
-            .collect();
+        let laid = build_layout(&diffs, &threads_by_file, DEFAULT_WRAP_WIDTH);
         let scroll = vec![0; diffs.len()];
         let cursor = vec![0; diffs.len()];
         let file_tree = FileTree::build(&diffs);
@@ -111,7 +133,19 @@ impl ReviewState {
             file_tree,
             visible_rows,
             status: None,
+            threads_by_file,
+            last_layout_width: DEFAULT_WRAP_WIDTH,
         }
+    }
+
+    /// Re-lay-out diffs with a new wrap width. Called by `render_body` when the
+    /// pane width changes.
+    pub fn relayout_for_width(&mut self, content_width: u16) {
+        if content_width == self.last_layout_width || content_width == 0 {
+            return;
+        }
+        self.last_layout_width = content_width;
+        self.laid = build_layout(&self.diffs, &self.threads_by_file, content_width);
     }
 
     pub fn set_status(&mut self, text: impl Into<String>, kind: StatusKind) {
@@ -194,12 +228,8 @@ impl ReviewState {
                 threads_by_file[idx].push(thread);
             }
         }
-        self.laid = self
-            .diffs
-            .iter()
-            .zip(&threads_by_file)
-            .map(|(d, t)| LaidOutDiff::from_file(d, t))
-            .collect();
+        self.threads_by_file = threads_by_file;
+        self.laid = build_layout(&self.diffs, &self.threads_by_file, self.last_layout_width);
     }
 
     pub fn pr_number(&self) -> u64 {
@@ -554,6 +584,7 @@ fn render_body(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
         .split(area);
 
     state.last_pane_height = cols[1].height;
+    state.relayout_for_width(cols[1].width);
 
     render_files(frame, cols[0], state);
 

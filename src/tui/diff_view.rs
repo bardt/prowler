@@ -50,7 +50,7 @@ pub struct LaidOutDiff {
 }
 
 impl LaidOutDiff {
-    pub fn from_file(file: &FileDiff, threads: &[CommentThread]) -> Self {
+    pub fn from_file(file: &FileDiff, threads: &[CommentThread], wrap_width: usize) -> Self {
         let mut rows = Vec::new();
         let mut hunk_starts = Vec::new();
 
@@ -79,7 +79,7 @@ impl LaidOutDiff {
                             head_line: Some(new_line),
                             thread_id: None,
                         });
-                        attach_threads(&mut rows, threads, Some(old_line), Some(new_line));
+                        attach_threads(&mut rows, threads, Some(old_line), Some(new_line), wrap_width);
                         old_line += 1;
                         new_line += 1;
                         i += 1;
@@ -92,7 +92,7 @@ impl LaidOutDiff {
                             head_line: Some(new_line),
                             thread_id: None,
                         });
-                        attach_threads(&mut rows, threads, Some(old_line), Some(new_line));
+                        attach_threads(&mut rows, threads, Some(old_line), Some(new_line), wrap_width);
                         old_line += 1;
                         new_line += 1;
                         i += 1;
@@ -127,7 +127,7 @@ impl LaidOutDiff {
                                 head_line,
                                 thread_id: None,
                             });
-                            attach_threads(&mut rows, threads, base_line, head_line);
+                            attach_threads(&mut rows, threads, base_line, head_line, wrap_width);
                         }
                     }
                 }
@@ -139,12 +139,14 @@ impl LaidOutDiff {
 }
 
 /// After pushing a content row, append any comment threads whose anchor matches
-/// either side's line number on this row.
+/// either side's line number on this row. Body text is word-wrapped to
+/// `wrap_width` columns.
 fn attach_threads(
     rows: &mut Vec<Row>,
     threads: &[CommentThread],
     base_line: Option<u32>,
     head_line: Option<u32>,
+    wrap_width: usize,
 ) {
     for thread in threads {
         let matches = match thread.side {
@@ -166,26 +168,84 @@ fn attach_threads(
                 },
                 &thread.id,
             );
-            for body_line in comment.body.lines() {
-                push_comment_row(
-                    rows,
-                    thread.side,
-                    Cell::CommentBody(body_line.to_owned()),
-                    &thread.id,
-                );
-            }
-            // Empty body still gets a `│` line so the thread structure is visible.
             if comment.body.is_empty() {
+                // Empty body still gets a `│` line so the thread structure is visible.
                 push_comment_row(
                     rows,
                     thread.side,
                     Cell::CommentBody(String::new()),
                     &thread.id,
                 );
+            } else {
+                for body_line in comment.body.lines() {
+                    for chunk in wrap_line(body_line, wrap_width) {
+                        push_comment_row(
+                            rows,
+                            thread.side,
+                            Cell::CommentBody(chunk),
+                            &thread.id,
+                        );
+                    }
+                }
             }
         }
         push_comment_row(rows, thread.side, Cell::CommentEnd, &thread.id);
     }
+}
+
+/// Word-wrap a single line of text to `width` columns. Whitespace-delimited
+/// words are kept together when possible; words longer than `width` are
+/// hard-split at UTF-8 boundaries. Empty input returns a single empty line.
+///
+/// Width is measured in bytes/codepoints, not visual columns — wide characters
+/// (CJK / emoji) will still over-flow. Acceptable for v1; revisit with
+/// `unicode-width` if comments contain a lot of wide chars.
+fn wrap_line(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_owned()];
+    }
+    if text.is_empty() {
+        return vec![String::new()];
+    }
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if word.len() > width {
+            if !current.is_empty() {
+                out.push(std::mem::take(&mut current));
+            }
+            let mut consumed = 0;
+            while consumed < word.len() {
+                let remaining = &word[consumed..];
+                let mut end = remaining.len().min(width);
+                while end > 0 && !remaining.is_char_boundary(end) {
+                    end -= 1;
+                }
+                if end == 0 {
+                    break;
+                }
+                out.push(remaining[..end].to_owned());
+                consumed += end;
+            }
+            continue;
+        }
+        if current.is_empty() {
+            current = word.to_owned();
+        } else if current.len() + 1 + word.len() <= width {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            out.push(std::mem::take(&mut current));
+            current = word.to_owned();
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
 }
 
 fn push_comment_row(rows: &mut Vec<Row>, side: CommentSide, cell: Cell, thread_id: &str) {

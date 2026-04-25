@@ -161,9 +161,6 @@ new milestone.
   (GitHub marks them outdated when the head moves). They're still meaningful — show
   them somewhere (file-level pinned panel, or anchored to the original line on the
   base side) rather than silently discarding.
-- **Wrap long comment bodies.** Comment body lines are rendered verbatim and overflow
-  the pane width. Hard-wrap at the pane width (or use ratatui's `Wrap`) — needs a
-  layout pass that knows the pane width.
 - **Collapse/expand threads.** Spec calls for `Enter` to toggle a thread; today every
   thread is fully expanded. Add per-thread collapsed state, default to collapsed
   (one-line summary), expand the thread under the cursor on `Enter`.
