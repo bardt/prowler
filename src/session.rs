@@ -11,6 +11,10 @@ pub enum FileStatus {
     InProgress,
     Viewed,
     Skipped,
+    /// You marked this file viewed earlier, but GitHub auto-cleared the mark
+    /// because the head SHA changed. Functionally equivalent to Unviewed for
+    /// keybind behaviour, but rendered distinctly so you notice.
+    Dismissed,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

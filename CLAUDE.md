@@ -149,12 +149,6 @@ new milestone.
 
 ## Backlog
 
-- **Distinguish `DISMISSED` viewed state.** `fetch_pr` now seeds `Session.files`
-  from `viewerViewedState` on PR open, but only `VIEWED` is honoured —
-  `DISMISSED` (GitHub auto-cleared a viewed mark because the head moved) is
-  treated identically to `UNVIEWED`. Surface it distinctly (separate
-  `FileStatus::Dismissed`?) so the user notices files that were viewed but
-  invalidated by a force-push.
 - **Render outdated comments.** `fetch_comments` drops comments whose `line` is null
   (GitHub marks them outdated when the head moves). They're still meaningful — show
   them somewhere (file-level pinned panel, or anchored to the original line on the

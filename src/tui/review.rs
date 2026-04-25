@@ -798,6 +798,12 @@ fn render_files(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
                     FileStatus::InProgress => ("*", Style::default().fg(Color::Cyan)),
                     FileStatus::Viewed => ("\u{2713}", Style::default().fg(Color::Green)),
                     FileStatus::Skipped => ("~", Style::default().fg(Color::Yellow)),
+                    FileStatus::Dismissed => (
+                        "!",
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                 };
                 let name_style = if status == FileStatus::Viewed {
                     Style::default().fg(Color::DarkGray)

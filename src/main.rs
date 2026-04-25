@@ -90,11 +90,25 @@ async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
     }
 
     let mut files = session.map(|s| s.files).unwrap_or_default();
-    // Seed any unknown files from GitHub's per-viewer state. Local state wins —
-    // it reflects user actions that may not have synced yet.
+    // Merge GitHub's per-viewer state with the local session map.
+    //
+    // - DISMISSED (GitHub auto-cleared a viewed mark because the head moved)
+    //   wins over a local Viewed: the user should know their review is stale.
+    //   It does NOT override Skipped — that's an explicit "not going to review".
+    // - Otherwise the local state wins, since it can carry user actions whose
+    //   sync to GitHub may not yet have completed.
     for pr_file in &meta.files {
-        if !files.contains_key(&pr_file.path) && pr_file.viewer_viewed_state == "VIEWED" {
-            files.insert(pr_file.path.clone(), session::FileStatus::Viewed);
+        let github_state = pr_file.viewer_viewed_state.as_str();
+        let local = files.get(&pr_file.path).copied();
+        match (local, github_state) {
+            (Some(session::FileStatus::Skipped), _) => {}
+            (_, "DISMISSED") => {
+                files.insert(pr_file.path.clone(), session::FileStatus::Dismissed);
+            }
+            (None, "VIEWED") => {
+                files.insert(pr_file.path.clone(), session::FileStatus::Viewed);
+            }
+            _ => {}
         }
     }
     let session = Session {

@@ -132,3 +132,22 @@ syncs are logged to `/tmp/prowler-sync.log` only (existing behaviour). If a
 user ever wants positive confirmation, a verbose-mode flag could re-enable.
 
 ---
+
+## DISMISSED viewed state surfaced as `FileStatus::Dismissed` (2026-04-26)
+
+**Choice:** New `FileStatus::Dismissed` variant rendered with a bold yellow
+`!` marker in the file panel. Triggered when GitHub returns
+`viewerViewedState == "DISMISSED"` (auto-cleared because the head SHA moved
+since the user marked the file viewed).
+
+**Merge precedence:** DISMISSED is the *only* GitHub state that overrides a
+local entry — and even then, not Skipped. The rationale: dismissal is a
+positive signal "your previous review is stale, look again", which is more
+valuable than preserving a local Viewed mark. Skipped means "I've decided
+not to review", which doesn't get invalidated by code churn.
+
+**Keybind behaviour:** `v` on a Dismissed row marks Viewed (re-review); `s`
+marks Skipped. Same code path as Unviewed because the existing `_ =>
+FileStatus::Viewed` arm already covers Dismissed.
+
+---
