@@ -24,6 +24,11 @@ pub struct PrMetadata {
     /// ID of the viewer's currently pending review on this PR, if any. Set by
     /// `fetch_pr` and used by `submit_review` to publish draft comments.
     pub pending_review_id: Option<String>,
+    /// PullRequestState enum from GraphQL: `OPEN`, `CLOSED`, `MERGED`.
+    pub state: String,
+    /// True when the PR is a draft. Cross-cuts with `state == OPEN` —
+    /// drafts render as DRAFT instead of OPEN.
+    pub is_draft: bool,
 }
 
 impl PrMetadata {
@@ -183,6 +188,8 @@ pub async fn fetch_pr(
         head_sha: pr.head_ref_oid,
         files,
         pending_review_id,
+        state: pr.state,
+        is_draft: pr.is_draft,
     };
 
     let threads = gql_threads
@@ -478,6 +485,8 @@ struct GqlRepo {
 struct GqlPullRequest {
     id: String,
     title: String,
+    state: String,
+    is_draft: bool,
     base_ref_name: String,
     base_ref_oid: String,
     head_ref_name: String,
@@ -608,6 +617,8 @@ query($owner: String!, $name: String!, $number: Int!) {
     pullRequest(number: $number) {
       id
       title
+      state
+      isDraft
       baseRefName
       baseRefOid
       headRefName

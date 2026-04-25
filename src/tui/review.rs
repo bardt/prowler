@@ -849,7 +849,16 @@ fn render_footer(frame: &mut Frame, area: Rect, state: &ReviewState) {
 
 fn render_header(frame: &mut Frame, area: Rect, state: &ReviewState) {
     let (added, removed) = state.totals();
+    let (badge_text, badge_color) = pr_state_badge(&state.meta.state, state.meta.is_draft);
     let title = Line::from(vec![
+        Span::styled(
+            format!(" {badge_text} "),
+            Style::default()
+                .fg(Color::Black)
+                .bg(badge_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
         Span::styled(
             format!("#{}: ", state.meta.pr_number()),
             Style::default().add_modifier(Modifier::BOLD),
@@ -861,6 +870,22 @@ fn render_header(frame: &mut Frame, area: Rect, state: &ReviewState) {
         Span::styled(format!("-{removed}"), Style::default().fg(Color::Red)),
     ]);
     frame.render_widget(Paragraph::new(title), area);
+}
+
+/// `state` is GraphQL `PullRequestState`: `OPEN | CLOSED | MERGED`. A draft PR
+/// has `state == "OPEN"` plus `is_draft == true`; we render that as `DRAFT` so
+/// the reviewer can tell at a glance.
+fn pr_state_badge(state: &str, is_draft: bool) -> (&'static str, Color) {
+    if is_draft && state == "OPEN" {
+        ("DRAFT", Color::Gray)
+    } else {
+        match state {
+            "OPEN" => ("OPEN", Color::Green),
+            "MERGED" => ("MERGED", Color::Magenta),
+            "CLOSED" => ("CLOSED", Color::Red),
+            _ => ("?", Color::DarkGray),
+        }
+    }
 }
 
 fn render_body(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
@@ -1185,6 +1210,8 @@ mod tests {
                 })
                 .collect(),
             pending_review_id: None,
+            state: "OPEN".into(),
+            is_draft: false,
         }
     }
 
@@ -1348,6 +1375,28 @@ mod tests {
             lines.push(line.trim_end().to_owned());
         }
         lines
+    }
+
+    #[test]
+    fn pr_state_badge_resolves_correctly() {
+        assert_eq!(super::pr_state_badge("OPEN", false).0, "OPEN");
+        assert_eq!(super::pr_state_badge("OPEN", true).0, "DRAFT");
+        assert_eq!(super::pr_state_badge("MERGED", false).0, "MERGED");
+        assert_eq!(super::pr_state_badge("CLOSED", false).0, "CLOSED");
+        assert_eq!(super::pr_state_badge("WAT", false).0, "?");
+        // is_draft is meaningless when state != OPEN — we render the literal state.
+        assert_eq!(super::pr_state_badge("MERGED", true).0, "MERGED");
+    }
+
+    #[test]
+    fn render_shows_pr_state_badge_in_header() {
+        let mut s = state(&["a.rs"], vec![]);
+        let lines = render_to_lines(&mut s, 120, 20);
+        assert!(
+            lines[0].contains("OPEN"),
+            "header should include the state badge: {:?}",
+            lines[0]
+        );
     }
 
     #[test]

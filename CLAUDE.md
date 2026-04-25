@@ -164,9 +164,6 @@ new milestone.
   and inject either the real `Octocrab`-backed impl or a `MockGitHubClient`
   returning canned responses. Test handlers like `post_comment` /
   `submit_review` then become drivable end-to-end.
-- **PR state marker in title.** Show open/draft/merged/closed state next to the PR
-  title (e.g. a colored badge or single-character glyph) so the reviewer can tell at a
-  glance what state the PR is in.
 - **PR description + top-level conversation panel.** Add a panel that renders the PR
   body and the issue-level (non-inline) conversation. Today only inline review comments
   are visible inside the TUI.
