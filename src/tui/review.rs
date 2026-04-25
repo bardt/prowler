@@ -89,6 +89,14 @@ impl ReviewState {
     /// Return the GitHub-side anchor (path, side, line) for the row under the cursor,
     /// preferring HEAD when the row has both lines (Context). Returns None for rows
     /// with no commentable content (HunkHeader, comment rows, Empty).
+    /// Return the thread node ID for the row under the cursor, if it sits inside
+    /// a rendered comment thread (header, body, or terminator row). Used by `r`.
+    pub fn reply_target(&self) -> Option<String> {
+        let i = self.selected_idx()?;
+        let cur = self.cursor[i] as usize;
+        self.laid[i].rows.get(cur)?.thread_id.clone()
+    }
+
     pub fn comment_target(&self) -> Option<(String, CommentSide, u32)> {
         let i = self.selected_idx()?;
         let cur = self.cursor[i] as usize;
@@ -469,8 +477,8 @@ fn render_hotkeys(frame: &mut Frame, area: Rect) {
         Span::raw(" edit  "),
         key("v/s"),
         Span::raw(" view/skip  "),
-        key("c"),
-        Span::raw(" comment  "),
+        key("c/r"),
+        Span::raw(" comment/reply  "),
         key("q"),
         Span::raw(" quit"),
     ]);

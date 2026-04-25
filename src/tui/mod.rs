@@ -83,6 +83,7 @@ fn event_loop(
             KeyCode::Char('v') => state.toggle_viewed(),
             KeyCode::Char('s') => state.toggle_skipped(),
             KeyCode::Char('c') => post_comment(terminal, &mut state)?,
+            KeyCode::Char('r') => reply_to_comment(terminal, &mut state)?,
             _ => {}
         }
     }
@@ -149,6 +150,46 @@ fn post_comment(
         Ok((_meta, threads)) => state.set_threads(threads),
         Err(e) => log_post_error(&format!(
             "[FAIL] PR #{pr_number} {path}:{line} {side_label}: {e:#}\n"
+        )),
+    }
+    Ok(())
+}
+
+fn reply_to_comment(
+    terminal: &mut ratatui::DefaultTerminal,
+    state: &mut review::ReviewState,
+) -> Result<()> {
+    let Some(thread_id) = state.reply_target() else {
+        return Ok(());
+    };
+    let prompt = "# Replying to thread.\n# Lines starting with `#` are ignored. Save and exit to post; abort the editor to cancel.\n";
+
+    ratatui::restore();
+    let body = editor::compose(prompt);
+    *terminal = ratatui::init();
+    terminal.clear().ok();
+
+    let body = match body {
+        Ok(b) if !b.is_empty() => b,
+        Ok(_) | Err(_) => return Ok(()),
+    };
+
+    let token = state.token.clone();
+    let owner = state.owner.clone();
+    let repo = state.repo.clone();
+    let pr_number = state.pr_number();
+
+    let result = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            crate::github::reply_to_thread(&token, &thread_id, &body).await?;
+            crate::github::fetch_pr(&token, &owner, &repo, pr_number).await
+        })
+    });
+
+    match result {
+        Ok((_meta, threads)) => state.set_threads(threads),
+        Err(e) => log_post_error(&format!(
+            "[FAIL] reply PR #{pr_number} thread {thread_id}: {e:#}\n"
         )),
     }
     Ok(())

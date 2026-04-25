@@ -38,6 +38,8 @@ pub struct ReviewComment {
     pub body: String,
     /// Pre-formatted "YYYY-MM-DD HH:MM".
     pub created_at: String,
+    /// True when the comment is part of an unsubmitted review (GraphQL `state == "PENDING"`).
+    pub is_pending: bool,
 }
 
 #[allow(dead_code)] // `id`, `is_resolved`, `is_outdated` are reserved for M9 / future UI.
@@ -186,6 +188,7 @@ pub async fn fetch_pr(
                         .unwrap_or_else(|| "unknown".to_string()),
                     body: c.body,
                     created_at: c.created_at.format("%Y-%m-%d %H:%M").to_string(),
+                    is_pending: c.state == "PENDING",
                 })
                 .collect();
             Some(CommentThread {
@@ -256,6 +259,42 @@ mutation($pid: ID!, $path: String!, $line: Int!, $side: DiffSide!, $body: String
 
     if let Some(errors) = response.get("errors") {
         bail!("addPullRequestReviewThread for `{path}:{line}`: {errors}");
+    }
+    Ok(())
+}
+
+/// Reply to an existing review thread.
+/// Uses the `addPullRequestReviewThreadReply` GraphQL mutation.
+pub async fn reply_to_thread(token: &str, thread_id: &str, body: &str) -> Result<()> {
+    let octocrab = Octocrab::builder()
+        .personal_token(token.to_owned())
+        .build()
+        .context("failed to build GitHub client")?;
+
+    let query = r#"
+mutation($threadId: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: {
+    pullRequestReviewThreadId: $threadId,
+    body: $body
+  }) {
+    comment { id }
+  }
+}
+"#;
+    let payload = serde_json::json!({
+        "query": query,
+        "variables": { "threadId": thread_id, "body": body },
+    });
+
+    let response: serde_json::Value = octocrab
+        .graphql(&payload)
+        .await
+        .with_context(|| {
+            format!("addPullRequestReviewThreadReply request failed for thread {thread_id}")
+        })?;
+
+    if let Some(errors) = response.get("errors") {
+        bail!("addPullRequestReviewThreadReply for thread {thread_id}: {errors}");
     }
     Ok(())
 }
@@ -429,6 +468,7 @@ struct GqlComment {
     author: Option<GqlActor>,
     body: String,
     created_at: chrono::DateTime<chrono::Utc>,
+    state: String,
 }
 
 #[derive(Deserialize)]
@@ -495,7 +535,7 @@ query($owner: String!, $name: String!, $number: Int!) {
           isResolved
           isOutdated
           comments(first: 100) {
-            nodes { author { login } body createdAt }
+            nodes { author { login } body createdAt state }
           }
         }
         pageInfo { hasNextPage endCursor }
@@ -531,7 +571,7 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String!) {
           isResolved
           isOutdated
           comments(first: 100) {
-            nodes { author { login } body createdAt }
+            nodes { author { login } body createdAt state }
           }
         }
         pageInfo { hasNextPage endCursor }

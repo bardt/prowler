@@ -167,21 +167,10 @@ new milestone.
 - **Collapse/expand threads.** Spec calls for `Enter` to toggle a thread; today every
   thread is fully expanded. Add per-thread collapsed state, default to collapsed
   (one-line summary), expand the thread under the cursor on `Enter`.
-- **Reply to existing comment threads.** M9 only handles posting *new* threads via
-  `addPullRequestReviewThread`. Add a keybind (probably `r`) that, when the cursor is
-  on a thread row, calls `addPullRequestReviewThreadReply` against the thread's
-  `id`. The thread node ID is already captured in `CommentThread.id`.
-- **Status feedback for posts.** `c` posts silently — no UI confirmation, errors
+- **Status feedback for posts.** `c` / `r` post silently — no UI confirmation, errors
   only appear in `/tmp/prowler-sync.log`. Add a transient status line at the bottom
   of the TUI (e.g., "Posted ✓" / "Post failed: ...") that auto-clears after a few
   redraws.
-- **Pending review state indicator on comments.** `addPullRequestReviewThread`
-  without a `pullRequestReviewId` silently creates a draft review under the user's
-  account; comments live there until M10 submits the review. GitHub's web UI labels
-  these "Pending" — we don't. Surface this either via `PullRequestReviewComment.state`
-  (enum includes `PENDING`) or by detecting the comment's parent `pullRequestReview`
-  is the viewer's current pending review. Render with a distinct marker (e.g., dim
-  `(pending)` after the date in the thread header).
 - **Cross-file comment navigation.** Add `gN` / `gP` (or similar) to jump to the
   next/prev comment thread across the whole PR — selects the file, scrolls cursor
   to the thread anchor. Today `]` / `[` only navigate hunks within the current file.

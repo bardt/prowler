@@ -21,8 +21,12 @@ pub enum Cell {
     Removed(String),
     Moved(String),
     /// Header line of a comment within a thread: `┌ @author 2026-04-20 14:30`
-    /// (`├` for replies). The bool is true for the root, false for replies.
-    CommentHeader(String, bool),
+    /// (`├` for replies, with an optional dim `(pending)` suffix).
+    CommentHeader {
+        text: String,
+        is_root: bool,
+        is_pending: bool,
+    },
     /// Body line of a comment: `│ {text}`.
     CommentBody(String),
     /// Thread terminator: `└`.
@@ -35,6 +39,9 @@ pub struct Row {
     pub head: Cell,
     pub base_line: Option<u32>,
     pub head_line: Option<u32>,
+    /// Set when this row is part of a comment thread (header / body / end).
+    /// Used by `r` (reply) to identify which thread the cursor is on.
+    pub thread_id: Option<String>,
 }
 
 pub struct LaidOutDiff {
@@ -54,6 +61,7 @@ impl LaidOutDiff {
                 head: Cell::HunkHeader(hunk.header.clone()),
                 base_line: None,
                 head_line: None,
+                thread_id: None,
             });
 
             let (mut old_line, mut new_line) =
@@ -69,6 +77,7 @@ impl LaidOutDiff {
                             head: Cell::Context(t.clone()),
                             base_line: Some(old_line),
                             head_line: Some(new_line),
+                            thread_id: None,
                         });
                         attach_threads(&mut rows, threads, Some(old_line), Some(new_line));
                         old_line += 1;
@@ -81,6 +90,7 @@ impl LaidOutDiff {
                             head: Cell::Moved(t.clone()),
                             base_line: Some(old_line),
                             head_line: Some(new_line),
+                            thread_id: None,
                         });
                         attach_threads(&mut rows, threads, Some(old_line), Some(new_line));
                         old_line += 1;
@@ -115,6 +125,7 @@ impl LaidOutDiff {
                                 head,
                                 base_line,
                                 head_line,
+                                thread_id: None,
                             });
                             attach_threads(&mut rows, threads, base_line, head_line);
                         }
@@ -144,25 +155,40 @@ fn attach_threads(
             continue;
         }
         for (idx, comment) in thread.comments.iter().enumerate() {
-            let header = format!("@{} {}", comment.author, comment.created_at);
-            push_comment_row(rows, thread.side, Cell::CommentHeader(header, idx == 0));
+            let header_text = format!("@{} {}", comment.author, comment.created_at);
+            push_comment_row(
+                rows,
+                thread.side,
+                Cell::CommentHeader {
+                    text: header_text,
+                    is_root: idx == 0,
+                    is_pending: comment.is_pending,
+                },
+                &thread.id,
+            );
             for body_line in comment.body.lines() {
                 push_comment_row(
                     rows,
                     thread.side,
                     Cell::CommentBody(body_line.to_owned()),
+                    &thread.id,
                 );
             }
             // Empty body still gets a `│` line so the thread structure is visible.
             if comment.body.is_empty() {
-                push_comment_row(rows, thread.side, Cell::CommentBody(String::new()));
+                push_comment_row(
+                    rows,
+                    thread.side,
+                    Cell::CommentBody(String::new()),
+                    &thread.id,
+                );
             }
         }
-        push_comment_row(rows, thread.side, Cell::CommentEnd);
+        push_comment_row(rows, thread.side, Cell::CommentEnd, &thread.id);
     }
 }
 
-fn push_comment_row(rows: &mut Vec<Row>, side: CommentSide, cell: Cell) {
+fn push_comment_row(rows: &mut Vec<Row>, side: CommentSide, cell: Cell, thread_id: &str) {
     let (base, head) = match side {
         CommentSide::Base => (cell, Cell::Empty),
         CommentSide::Head => (Cell::Empty, cell),
@@ -172,6 +198,7 @@ fn push_comment_row(rows: &mut Vec<Row>, side: CommentSide, cell: Cell) {
         head,
         base_line: None,
         head_line: None,
+        thread_id: Some(thread_id.to_owned()),
     });
 }
 
@@ -272,20 +299,31 @@ fn render_cell<'a>(cell: &'a Cell, syntax: &syntect::parsing::SyntaxReference) -
         Cell::Added(t) => row_with_marker("+ ", t, BG_ADDED, syntax),
         Cell::Removed(t) => row_with_marker("- ", t, BG_REMOVED, syntax),
         Cell::Moved(t) => row_with_marker("~ ", t, BG_MOVED, syntax),
-        Cell::CommentHeader(text, is_root) => {
+        Cell::CommentHeader {
+            text,
+            is_root,
+            is_pending,
+        } => {
             let lead = if *is_root { "\u{250C} " } else { "\u{251C} " };
-            Line::from(vec![
-                Span::styled(
-                    lead,
-                    Style::default().fg(Color::Yellow),
-                ),
+            let mut spans = vec![
+                Span::styled(lead, Style::default().fg(Color::Yellow)),
                 Span::styled(
                     text.clone(),
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 ),
-            ])
+            ];
+            if *is_pending {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(
+                    "(pending)",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ));
+            }
+            Line::from(spans)
         }
         Cell::CommentBody(text) => Line::from(vec![
             Span::styled("\u{2502} ", Style::default().fg(Color::Yellow)),
