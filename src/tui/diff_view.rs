@@ -24,13 +24,14 @@ pub enum Cell {
     Removed(String),
     Moved(String),
     /// Header line of a comment within a thread: `┌ @author 2026-04-20 14:30`
-    /// (`├` for replies, with optional dim `(pending)` / `(outdated)` suffixes
-    /// on the root row only).
+    /// (`├` for replies, with optional dim `(pending)` / `(outdated)` /
+    /// `(resolved)` suffixes on the root row only).
     CommentHeader {
         text: String,
         is_root: bool,
         is_pending: bool,
         is_outdated: bool,
+        is_resolved: bool,
     },
     /// Body line of a comment: `│ {text}`. `in_suggestion` flags lines that
     /// are inside a ` ```suggestion ` … ` ``` ` fence (so the renderer can
@@ -46,6 +47,7 @@ pub enum Cell {
         text: String,
         has_pending: bool,
         is_outdated: bool,
+        is_resolved: bool,
     },
 }
 
@@ -193,6 +195,7 @@ fn attach_threads(
                     text: collapsed_summary(thread, wrap_width),
                     has_pending: thread.comments.iter().any(|c| c.is_pending),
                     is_outdated: thread.is_outdated,
+                    is_resolved: thread.is_resolved,
                 },
                 &thread.id,
                 None,
@@ -208,9 +211,10 @@ fn attach_threads(
                     text: header_text,
                     is_root: idx == 0,
                     is_pending: comment.is_pending,
-                    // Only show (outdated) on the root header — replies belong
-                    // to the same thread so it'd be redundant.
+                    // Only show (outdated) / (resolved) on the root header —
+                    // replies belong to the same thread so it'd be redundant.
                     is_outdated: thread.is_outdated && idx == 0,
+                    is_resolved: thread.is_resolved && idx == 0,
                 },
                 &thread.id,
                 Some(&comment.id),
@@ -471,14 +475,16 @@ fn render_cell<'a>(cell: &'a Cell, syntax: &syntect::parsing::SyntaxReference) -
             is_root,
             is_pending,
             is_outdated,
+            is_resolved,
         } => {
             let lead = if *is_root { "\u{250C} " } else { "\u{251C} " };
+            let header_color = if *is_resolved { Color::DarkGray } else { Color::Yellow };
             let mut spans = vec![
-                Span::styled(lead, Style::default().fg(Color::Yellow)),
+                Span::styled(lead, Style::default().fg(header_color)),
                 Span::styled(
                     text.clone(),
                     Style::default()
-                        .fg(Color::Yellow)
+                        .fg(header_color)
                         .add_modifier(Modifier::BOLD),
                 ),
             ];
@@ -488,6 +494,15 @@ fn render_cell<'a>(cell: &'a Cell, syntax: &syntect::parsing::SyntaxReference) -
                     "(pending)",
                     Style::default()
                         .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ));
+            }
+            if *is_resolved {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(
+                    "(resolved)",
+                    Style::default()
+                        .fg(Color::Green)
                         .add_modifier(Modifier::ITALIC),
                 ));
             }
@@ -526,13 +541,15 @@ fn render_cell<'a>(cell: &'a Cell, syntax: &syntect::parsing::SyntaxReference) -
             text,
             has_pending,
             is_outdated,
+            is_resolved,
         } => {
+            let header_color = if *is_resolved { Color::DarkGray } else { Color::Yellow };
             let mut spans = vec![
-                Span::styled("\u{25B8} ", Style::default().fg(Color::Yellow)),
+                Span::styled("\u{25B8} ", Style::default().fg(header_color)),
                 Span::styled(
                     text.clone(),
                     Style::default()
-                        .fg(Color::Yellow)
+                        .fg(header_color)
                         .add_modifier(Modifier::BOLD),
                 ),
             ];
@@ -542,6 +559,15 @@ fn render_cell<'a>(cell: &'a Cell, syntax: &syntect::parsing::SyntaxReference) -
                     "(pending)",
                     Style::default()
                         .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ));
+            }
+            if *is_resolved {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(
+                    "(resolved)",
+                    Style::default()
+                        .fg(Color::Green)
                         .add_modifier(Modifier::ITALIC),
                 ));
             }

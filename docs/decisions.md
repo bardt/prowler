@@ -221,6 +221,29 @@ so the user knows to retry.
 
 ---
 
+## UX polish pass (2026-04-26)
+
+Three small, high-impact UX fixes shipped alongside M12/M13:
+
+1. **Dashboard rows now sort by `updatedAt` desc.** GitHub's default search
+   ordering is "best match" which feels random across the three sections.
+   Sort client-side so the most recently active PRs are at the top.
+2. **Resolved threads render dimmed with a green `(resolved)` tag.** Both
+   the collapsed summary and the expanded header pick this up; the
+   `is_resolved` flag now flows through `Cell::CommentHeader` and
+   `Cell::CollapsedThread`. Header color drops from yellow to dark gray
+   when resolved so resolved threads don't compete visually with active
+   ones.
+3. **Header shows `N/M viewed` progress.** Counts both `Viewed` and
+   `Skipped` (since both are explicit user actions on a file). Color goes
+   from cyan → green when complete, so the user has a clear "I'm done"
+   signal in a long PR.
+
+Roadmap of further UX ideas captured in `docs/ux-roadmap.md` so the user
+can prioritize next session.
+
+---
+
 ## M13: Resolve / edit / delete / apply-suggestion (2026-04-26)
 
 **Choice:** Add four cursor-context actions to the review TUI:

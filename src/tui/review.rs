@@ -1091,6 +1091,23 @@ fn render_footer(frame: &mut Frame, area: Rect, state: &ReviewState) {
 fn render_header(frame: &mut Frame, area: Rect, state: &ReviewState) {
     let (added, removed) = state.totals();
     let (badge_text, badge_color) = pr_state_badge(&state.meta.state, state.meta.is_draft);
+    let total = state.meta.files.len();
+    let viewed = state
+        .meta
+        .files
+        .iter()
+        .filter(|f| {
+            matches!(
+                state.session.files.get(&f.path).copied().unwrap_or(FileStatus::Unviewed),
+                FileStatus::Viewed | FileStatus::Skipped
+            )
+        })
+        .count();
+    let progress_color = if total > 0 && viewed == total {
+        Color::Green
+    } else {
+        Color::Cyan
+    };
     let title = Line::from(vec![
         Span::styled(
             format!(" {badge_text} "),
@@ -1109,6 +1126,11 @@ fn render_header(frame: &mut Frame, area: Rect, state: &ReviewState) {
         Span::styled(format!("+{added}"), Style::default().fg(Color::Green)),
         Span::raw(" "),
         Span::styled(format!("-{removed}"), Style::default().fg(Color::Red)),
+        Span::raw("   "),
+        Span::styled(
+            format!("{viewed}/{total} viewed"),
+            Style::default().fg(progress_color),
+        ),
     ]);
     frame.render_widget(Paragraph::new(title), area);
 }

@@ -486,11 +486,16 @@ pub async fn fetch_dashboard(token: &str, owner: &str, repo: &str) -> Result<Das
         .context("dashboard GraphQL request failed")?;
     let data = response.into_data()?;
 
-    Ok(DashboardData {
+    let mut out = DashboardData {
         review_requested: data.review_requested.nodes.into_iter().filter_map(into_dashboard_pr).collect(),
         authored: data.authored.nodes.into_iter().filter_map(into_dashboard_pr).collect(),
         assigned: data.assigned.nodes.into_iter().filter_map(into_dashboard_pr).collect(),
-    })
+    };
+    let by_recent = |a: &DashboardPr, b: &DashboardPr| b.updated_at.cmp(&a.updated_at);
+    out.review_requested.sort_by(by_recent);
+    out.authored.sort_by(by_recent);
+    out.assigned.sort_by(by_recent);
+    Ok(out)
 }
 
 fn into_dashboard_pr(node: GqlSearchNode) -> Option<DashboardPr> {
