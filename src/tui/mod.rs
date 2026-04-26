@@ -1,3 +1,4 @@
+mod dashboard;
 mod diff_view;
 mod editor;
 mod file_tree;
@@ -6,13 +7,14 @@ mod syntax;
 
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::diff::FileDiff;
 use crate::github::{CommentThread, PrMetadata};
 use crate::session::Session;
 use crate::tui::diff_view::Side;
+use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
 pub fn run(
@@ -39,6 +41,182 @@ pub fn run(
     );
     ratatui::restore();
     result
+}
+
+pub async fn run_dashboard(
+    token: String,
+    owner: String,
+    repo: String,
+    repo_root: PathBuf,
+) -> Result<()> {
+    let data = crate::github::fetch_dashboard(&token, &owner, &repo)
+        .await
+        .context("failed to fetch dashboard")?;
+    let mut state = dashboard::DashboardState::new(data, owner.clone(), repo.clone(), &repo_root)?;
+
+    let mut terminal = ratatui::init();
+    let result = dashboard_loop(&mut terminal, &mut state, &token, &owner, &repo, &repo_root);
+    ratatui::restore();
+    result
+}
+
+fn dashboard_loop(
+    terminal: &mut ratatui::DefaultTerminal,
+    state: &mut dashboard::DashboardState,
+    token: &str,
+    owner: &str,
+    repo: &str,
+    repo_root: &Path,
+) -> Result<()> {
+    loop {
+        terminal
+            .draw(|frame| dashboard::render(frame, state))
+            .context("failed to draw dashboard frame")?;
+
+        if !event::poll(Duration::from_millis(250)).context("failed to poll terminal events")? {
+            continue;
+        }
+        let Event::Key(key) = event::read().context("failed to read terminal event")? else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+
+        let Some(outcome) = state.apply_key(key.code) else {
+            continue;
+        };
+
+        match outcome {
+            dashboard::DashboardOutcome::Quit => return Ok(()),
+            dashboard::DashboardOutcome::Refresh => {
+                let res = tokio::task::block_in_place(|| {
+                    Handle::current().block_on(crate::github::fetch_dashboard(token, owner, repo))
+                });
+                match res {
+                    Ok(data) => {
+                        state.set_data(data);
+                        state.set_success("Refreshed");
+                    }
+                    Err(e) => state.set_error(format!("Refresh failed: {e:#}")),
+                }
+            }
+            dashboard::DashboardOutcome::Open(pr) | dashboard::DashboardOutcome::OpenLocal(pr) => {
+                let res = open_pr_review(terminal, token, owner, repo, repo_root, pr);
+                if let Err(e) = res {
+                    state.set_error(format!("Open #{pr} failed: {e:#}"));
+                }
+                if let Err(e) = state.reload_sessions() {
+                    state.set_error(format!("Reload sessions: {e:#}"));
+                }
+            }
+            dashboard::DashboardOutcome::Cleanup(pr) => {
+                match cleanup_session(repo_root, pr) {
+                    Ok(()) => state.set_success(format!("Cleaned up session #{pr}")),
+                    Err(e) => state.set_error(format!("Cleanup #{pr} failed: {e:#}")),
+                }
+                if let Err(e) = state.reload_sessions() {
+                    state.set_error(format!("Reload sessions: {e:#}"));
+                }
+            }
+        }
+    }
+}
+
+/// Fetch a PR, set up the worktree, and run the review event loop on the same
+/// terminal as the dashboard. When the user quits the review (`q`), control
+/// returns here.
+fn open_pr_review(
+    terminal: &mut ratatui::DefaultTerminal,
+    token: &str,
+    owner: &str,
+    repo: &str,
+    repo_root: &Path,
+    pr_number: u64,
+) -> Result<()> {
+    let (mut meta, threads) = tokio::task::block_in_place(|| {
+        Handle::current().block_on(crate::github::fetch_pr(token, owner, repo, pr_number))
+    })?;
+
+    let desired_path = crate::git::worktree_path(repo, pr_number, &meta.head_sha);
+    let base_path = crate::git::base_worktree_path(repo, pr_number, &meta.base_sha);
+
+    let session = Session::load(repo_root, pr_number)?;
+    let reused = desired_path.exists();
+    if !reused {
+        crate::git::fetch_pr_head(repo_root, pr_number)?;
+        crate::git::add_worktree(repo_root, &desired_path, &crate::git::pr_local_ref(pr_number))?;
+    }
+    crate::git::ensure_sha(repo_root, &meta.base_sha)?;
+    if !base_path.exists() {
+        crate::git::add_worktree(repo_root, &base_path, &meta.base_sha)?;
+    }
+
+    let renames = crate::git::detect_renames(repo_root, &meta.base_sha, &meta.head_sha)?;
+    for file in &mut meta.files {
+        if let Some(old) = renames.get(&file.path) {
+            file.previous_path = Some(old.clone());
+        }
+    }
+
+    let mut files = session.map(|s| s.files).unwrap_or_default();
+    for pr_file in &meta.files {
+        let github_state = pr_file.viewer_viewed_state.as_str();
+        let local = files.get(&pr_file.path).copied();
+        match (local, github_state) {
+            (Some(crate::session::FileStatus::Skipped), _) => {}
+            (_, "DISMISSED") => {
+                files.insert(pr_file.path.clone(), crate::session::FileStatus::Dismissed);
+            }
+            (None, "VIEWED") => {
+                files.insert(pr_file.path.clone(), crate::session::FileStatus::Viewed);
+            }
+            _ => {}
+        }
+    }
+    let session = Session {
+        pr_number,
+        branch: meta.head_branch.clone(),
+        worktree_path: desired_path.clone(),
+        base_worktree_path: base_path.clone(),
+        base_sha: meta.base_sha.clone(),
+        head_sha: meta.head_sha.clone(),
+        files,
+    };
+    session.save(repo_root)?;
+
+    let diffs = crate::diff::compute_diffs(repo_root, &desired_path, &meta.base_sha, &meta.files)?;
+
+    // Reuse the dashboard's terminal — the review event loop handles its own
+    // editor handoffs internally.
+    terminal.clear().ok();
+    event_loop(
+        terminal,
+        meta,
+        diffs,
+        threads,
+        session,
+        repo_root.to_path_buf(),
+        token.to_owned(),
+        owner.to_owned(),
+        repo.to_owned(),
+    )?;
+    terminal.clear().ok();
+    Ok(())
+}
+
+fn cleanup_session(repo_root: &Path, pr_number: u64) -> Result<()> {
+    let Some(s) = Session::load(repo_root, pr_number)? else {
+        return Ok(());
+    };
+    if s.worktree_path.exists() {
+        crate::git::remove_worktree(repo_root, &s.worktree_path)?;
+    }
+    if !s.base_worktree_path.as_os_str().is_empty() && s.base_worktree_path.exists() {
+        crate::git::remove_worktree(repo_root, &s.base_worktree_path)?;
+    }
+    Session::delete(repo_root, pr_number)?;
+    Ok(())
 }
 
 fn event_loop(

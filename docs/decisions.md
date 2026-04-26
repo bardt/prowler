@@ -221,6 +221,41 @@ so the user knows to retry.
 
 ---
 
+## M12: Dashboard (2026-04-26)
+
+**Choice:** `prowler` (no subcommand) opens a dashboard listing PRs in three
+sections: *Awaiting your review* (`review-requested:@me`), *Opened by you*
+(`author:@me`), *Assigned to you* (`assignee:@me`), plus a *Local sessions*
+section walking `.review/sessions/`. Search is scoped to the current repo
+(`repo:owner/name`). `Enter` opens the PR into the existing review TUI
+reusing the same terminal handle; `q` from review returns to the dashboard.
+
+**Alternative considered:** Cross-repo dashboard (drop the `repo:` filter).
+Rejected for v1 because (a) prowler has to be invoked inside a git repo
+anyway to set up worktrees, (b) cross-repo would let you see PRs whose
+worktrees we couldn't open without re-cloning, and (c) scoping makes the
+view deterministic. The repo filter is one line — easy to revert later.
+
+**`Open` for the local-sessions section:** treats it the same as opening a
+PR from a GitHub list — refetches fresh metadata via `fetch_pr`. We don't
+trust the cached session enough to skip the network round-trip; the user
+might have closed the PR or new comments arrived.
+
+**Terminal lifecycle:** the dashboard's `ratatui::init()` terminal is reused
+by the review event loop via a borrowed `&mut DefaultTerminal`. The review
+loop's editor handoff already swaps the terminal handle in place, so this
+works without extra plumbing. Cleared between transitions to prevent stale
+content from one mode leaking visually into the next.
+
+**Sections without entries** still render with a `(none)` placeholder so the
+header gives a stable mental map. Cursor skips them on `j/k`.
+
+**Refresh:** `r` re-runs `fetch_dashboard` and replaces the data. Local
+sessions are reloaded from disk on session-cleanup or on returning from
+review (in case viewed counts changed).
+
+---
+
 ## Outdated comments anchored at originalLine on BASE side (2026-04-26)
 
 **Choice:** When a thread has `line == null` (GitHub auto-cleared because the

@@ -120,7 +120,7 @@ Toggle local panel with `L`.
 
 ## Current milestone
 
-**M12 — Dashboard**
+**M13 — Missing review actions**
 
 ## Milestones overview
 
@@ -137,8 +137,8 @@ Toggle local panel with `L`.
 | M9 | Inline comments (post) | ✅ |
 | M10 | Submit review | ✅ |
 | M11 | Local diff panel | ✅ |
-| M12 | Dashboard | 🔲 next |
-| M13 | Missing review actions | 🔲 |
+| M12 | Dashboard | ✅ |
+| M13 | Missing review actions | 🔲 next |
 | M14 | Impact-based file sorting | 🔲 |
 
 **M10 scope:** A panel listing all comments in the current pending review, with a verdict

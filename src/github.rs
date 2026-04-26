@@ -411,6 +411,83 @@ mutation($threadId: ID!, $body: String!) {
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+pub struct DashboardPr {
+    pub number: u64,
+    pub title: String,
+    pub author: String,
+    pub is_draft: bool,
+    /// Pre-formatted "YYYY-MM-DD HH:MM".
+    pub updated_at: String,
+    pub additions: u64,
+    pub deletions: u64,
+    /// `APPROVED`, `CHANGES_REQUESTED`, `REVIEW_REQUIRED`, or empty.
+    pub review_decision: String,
+    /// `nameWithOwner` of the PR's repo (the search may cross repos).
+    #[allow(dead_code)]
+    pub repo_name_with_owner: String,
+    #[allow(dead_code)]
+    pub url: String,
+    /// Number of inline review threads + issue comments.
+    pub comment_count: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DashboardData {
+    pub review_requested: Vec<DashboardPr>,
+    pub authored: Vec<DashboardPr>,
+    pub assigned: Vec<DashboardPr>,
+}
+
+/// Fetch the three lists that drive the dashboard: PRs awaiting the viewer's
+/// review, PRs the viewer authored, and PRs assigned to the viewer. Scoped to
+/// the current repo so the dashboard reflects the directory you ran prowler in.
+pub async fn fetch_dashboard(token: &str, owner: &str, repo: &str) -> Result<DashboardData> {
+    let octocrab = Octocrab::builder()
+        .personal_token(token.to_owned())
+        .build()
+        .context("failed to build GitHub client")?;
+
+    let scope = format!("repo:{owner}/{repo}");
+    let req = format!("is:open is:pr review-requested:@me {scope}");
+    let auth = format!("is:open is:pr author:@me {scope}");
+    let asgn = format!("is:open is:pr assignee:@me {scope}");
+
+    let payload = serde_json::json!({
+        "query": DASHBOARD_QUERY,
+        "variables": { "req": req, "auth": auth, "asgn": asgn },
+    });
+
+    let response: GqlResponse<DashboardData_> = octocrab
+        .graphql(&payload)
+        .await
+        .context("dashboard GraphQL request failed")?;
+    let data = response.into_data()?;
+
+    Ok(DashboardData {
+        review_requested: data.review_requested.nodes.into_iter().filter_map(into_dashboard_pr).collect(),
+        authored: data.authored.nodes.into_iter().filter_map(into_dashboard_pr).collect(),
+        assigned: data.assigned.nodes.into_iter().filter_map(into_dashboard_pr).collect(),
+    })
+}
+
+fn into_dashboard_pr(node: GqlSearchNode) -> Option<DashboardPr> {
+    let pr = node.into_pr()?;
+    Some(DashboardPr {
+        number: pr.number,
+        title: pr.title,
+        author: pr.author.map(|a| a.login).unwrap_or_else(|| "unknown".to_string()),
+        is_draft: pr.is_draft,
+        updated_at: pr.updated_at.format("%Y-%m-%d %H:%M").to_string(),
+        additions: pr.additions,
+        deletions: pr.deletions,
+        review_decision: pr.review_decision.unwrap_or_default(),
+        repo_name_with_owner: pr.repository.name_with_owner,
+        url: pr.url,
+        comment_count: pr.comments.total_count + pr.review_threads.total_count,
+    })
+}
+
 /// Mark or unmark a PR file as viewed via GitHub GraphQL.
 pub async fn set_viewed(
     token: &str,
@@ -659,6 +736,105 @@ struct ThreadsPageRepo {
 struct ThreadsPagePr {
     review_threads: GqlThreadsConn,
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DashboardData_ {
+    #[serde(rename = "reviewRequested")]
+    review_requested: GqlSearchConn,
+    #[serde(rename = "authored")]
+    authored: GqlSearchConn,
+    #[serde(rename = "assigned")]
+    assigned: GqlSearchConn,
+}
+
+#[derive(Deserialize)]
+struct GqlSearchConn {
+    nodes: Vec<GqlSearchNode>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum GqlSearchNode {
+    Pr(Box<GqlSearchPr>),
+    Other(#[allow(dead_code)] serde_json::Value),
+}
+
+impl GqlSearchNode {
+    fn into_pr(self) -> Option<GqlSearchPr> {
+        match self {
+            GqlSearchNode::Pr(pr) => Some(*pr),
+            GqlSearchNode::Other(_) => None,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlSearchPr {
+    number: u64,
+    title: String,
+    is_draft: bool,
+    author: Option<GqlActor>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+    additions: u64,
+    deletions: u64,
+    review_decision: Option<String>,
+    repository: GqlRepoName,
+    url: String,
+    comments: GqlTotalCount,
+    review_threads: GqlTotalCount,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlRepoName {
+    name_with_owner: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlTotalCount {
+    total_count: u64,
+}
+
+const DASHBOARD_QUERY: &str = r#"
+query($req: String!, $auth: String!, $asgn: String!) {
+  reviewRequested: search(query: $req, type: ISSUE, first: 30) {
+    nodes {
+      ... on PullRequest {
+        number title isDraft updatedAt additions deletions reviewDecision url
+        author { login }
+        repository { nameWithOwner }
+        comments { totalCount }
+        reviewThreads { totalCount }
+      }
+    }
+  }
+  authored: search(query: $auth, type: ISSUE, first: 30) {
+    nodes {
+      ... on PullRequest {
+        number title isDraft updatedAt additions deletions reviewDecision url
+        author { login }
+        repository { nameWithOwner }
+        comments { totalCount }
+        reviewThreads { totalCount }
+      }
+    }
+  }
+  assigned: search(query: $asgn, type: ISSUE, first: 30) {
+    nodes {
+      ... on PullRequest {
+        number title isDraft updatedAt additions deletions reviewDecision url
+        author { login }
+        repository { nameWithOwner }
+        comments { totalCount }
+        reviewThreads { totalCount }
+      }
+    }
+  }
+}
+"#;
 
 const PR_QUERY: &str = r#"
 query($owner: String!, $name: String!, $number: Int!) {

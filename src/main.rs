@@ -14,12 +14,12 @@ use session::Session;
 #[command(name = "prowler", about = "Terminal UI for GitHub PR review")]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Review a pull request
+    /// Review a pull request (default mode if --pr is supplied)
     Review {
         #[arg(long)]
         pr: u64,
@@ -30,15 +30,35 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Open the PR dashboard for the current repo (default if no subcommand)
+    Dashboard,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    match cli.command {
+    match cli.command.unwrap_or(Commands::Dashboard) {
         Commands::Review { pr, cleanup, json } => review(pr, cleanup, json).await?,
+        Commands::Dashboard => dashboard().await?,
     }
     Ok(())
+}
+
+async fn dashboard() -> Result<()> {
+    let repo = Repository::discover(".")
+        .context("not inside a git repository (could not find .git)")?;
+    let repo_root = repo
+        .workdir()
+        .context("repository has no working directory")?
+        .to_path_buf();
+    let (owner, repo_name) = extract_owner_repo(&repo)?;
+
+    git::prune_worktrees(&repo_root)?;
+    session::ensure_excluded(&repo_root)?;
+
+    let token = auth::resolve_token().context("could not resolve a GitHub token")?;
+
+    tui::run_dashboard(token, owner, repo_name, repo_root).await
 }
 
 async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
