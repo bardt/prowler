@@ -807,14 +807,16 @@ fn submit_review(
 
     let prompt = format!(
         "# Submit review for PR #{pr_number}.\n\
-         #\n\
-         # First non-comment line: verdict — one of APPROVE, COMMENT, REQUEST_CHANGES.\n\
-         # Lines after that: optional summary body.\n\
+         # The first non-comment line below is your VERDICT — one of:\n\
+         #   APPROVE   COMMENT   REQUEST_CHANGES\n\
+         # Edit it if you want to change it; do not delete it.\n\
+         # Lines below the `--- summary ---` marker become the optional body.\n\
          {pending_summary}\n\
-         #\n\
          # Save and exit to submit; abort the editor (e.g. `:cq`) to cancel.\n\
          \n\
          COMMENT\n\
+         \n\
+         # --- summary below this line (optional) ---\n\
          \n"
     );
 
@@ -834,6 +836,10 @@ fn submit_review(
             log_post_error(&format!(
                 "[FAIL] submit PR #{pr_number}: invalid buffer — {e:#}\n"
             ));
+            state.set_status(
+                format!("Submit cancelled: {e}"),
+                review::StatusKind::Error,
+            );
             return Ok(());
         }
     };
