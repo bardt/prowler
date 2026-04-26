@@ -93,11 +93,17 @@ struct Session {
 
 ## Layout
 
-**Wide (≥ 200 cols), local panel off:** FILES | BASE | HEAD  
-**Wide (≥ 200 cols), local panel on:** FILES | BASE | HEAD | LOCAL  
-**Narrow (< 200 cols), local panel on:** FILES | HEAD | LOCAL  
+Always 3 columns: FILES | LEFT | RIGHT.
 
-Toggle local panel with `L`.
+`L` toggles between two modes:
+
+- **`BaseHead`** (default): LEFT = BASE, RIGHT = HEAD. What the PR proposes.
+- **`HeadLocal`**: LEFT = HEAD (head_sha), RIGHT = WORK (your worktree). What
+  you'd suggest on top of the PR. In this mode, `V` + `c` posts a
+  ` ```suggestion ` comment on the corresponding HEAD line range.
+
+Cursor and scroll are tracked per-mode so toggling preserves your
+position in each.
 
 ## Key bindings
 
@@ -126,10 +132,9 @@ Toggle local panel with `L`.
 | `?` | Toggle keymap help overlay |
 | `D` | Toggle PR description / conversation panel |
 | `Esc` | Close help / description overlay |
-| `L` | Toggle local diff panel |
-| `R` | Refresh local diff |
-| `]`/`[` | (LOCAL focus) Next/prev local hunk |
-| `c` | (LOCAL focus) Post current hunk as ` ```suggestion ` comment |
+| `L` | Toggle diff mode: PR (base→head) ↔ Local (head→work) |
+| `R` | Refresh local diff for current file |
+| `c` (mode 2 + `V` selection) | Post selection as ` ```suggestion ` comment |
 | `F5` / `Ctrl+R` | Re-fetch PR from GitHub (comments, viewed states) |
 | `S` | Submit review (verdict + summary) |
 | `q` | Back to dashboard |
@@ -146,7 +151,7 @@ Toggle local panel with `L`.
 
 ## Current milestone
 
-**M15 — LOCAL/HEAD pane alignment**
+**M16 — Hide-resolved + fuzzy filter**
 
 ## Milestones overview
 
@@ -168,7 +173,7 @@ Toggle local panel with `L`.
 | M12 | Dashboard | ✅ |
 | M13 | Missing review actions | ✅ |
 | M14 | Local hunk → suggestion comment | ✅ |
-| M15 | LOCAL/HEAD pane alignment | 🔲 next |
+| M15 | LOCAL/HEAD pane alignment | ✅ (via BaseHead/HeadLocal modes) |
 | M16 | Hide-resolved toggle + file-panel fuzzy filter | 🔲 |
 | M17 | Configuration file (`~/.config/prowler/config.toml`) | 🔲 |
 | M18 | 1.0 polish: empty states, loading hints, persisted UI prefs | 🔲 |

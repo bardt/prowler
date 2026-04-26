@@ -20,9 +20,26 @@ use crate::tui::file_tree::{FileTree, VisibleItem, VisibleRow};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Focus {
     Files,
+    /// Left diff pane. In `BaseHead` mode this is BASE; in `HeadLocal` it is
+    /// the HEAD-of-PR side (head_sha content).
     Base,
+    /// Right diff pane. In `BaseHead` mode this is HEAD; in `HeadLocal` it is
+    /// the worktree (your local edits).
     Head,
-    Local,
+}
+
+/// Two diff modes the user can toggle between with `L`.
+///
+/// - `BaseHead`: review what the PR proposes (base→head).
+/// - `HeadLocal`: review what your worktree adds on top of HEAD (head→worktree).
+///
+/// Both modes use the same side-by-side layout; only the underlying diff
+/// changes. Cursor and scroll are tracked per-mode so toggling preserves your
+/// position in each.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DiffMode {
+    BaseHead,
+    HeadLocal,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -76,18 +93,23 @@ pub struct ReviewState {
     /// Channel for messages from background tasks (currently the viewed-state
     /// sync). The event loop drains this and turns each into a status row.
     status_tx: UnboundedSender<StatusMessage>,
-    /// Whether the LOCAL pane is currently displayed.
-    local_panel: bool,
-    /// Per-file local diff (HEAD → worktree), lazily computed when L is toggled
-    /// on or R is pressed. `Some(diff)` means computed (might be empty);
-    /// `None` means not yet computed.
+    /// Active diff mode. Toggled with `L`. See `DiffMode`.
+    diff_mode: DiffMode,
+    /// Per-file head→worktree diff (data for `HeadLocal` mode). Lazily computed
+    /// on first toggle to mode 2 / first cursor-touch on a file in mode 2.
     local_diffs: Vec<Option<FileDiff>>,
-    /// Viewport scroll offset for the LOCAL pane, per file.
+    /// Per-file laid-out head→worktree diff for mode 2. Same `LaidOutDiff` as
+    /// mode 1 — just built from the head→worktree FileDiff instead of base→head.
+    local_laid: Vec<Option<LaidOutDiff>>,
+    /// Mode-2 viewport scroll per file (parallel to `scroll` for mode 1).
     local_scroll: Vec<u16>,
-    /// Currently-selected local hunk per file. Used by M14: `c` while focused
-    /// on LOCAL posts this hunk as a ` ```suggestion ` comment. Advanced with
-    /// `]` / `[` while focus is Local.
-    local_hunk_idx: Vec<usize>,
+    /// Mode-2 cursor row per file (parallel to `cursor` for mode 1).
+    local_cursor: Vec<u16>,
+    /// Mode-2 thread groups: HEAD-side threads only, with `side` remapped to
+    /// `Base` so attach_threads matches them on the head→worktree diff's
+    /// `old_line` (which is the HEAD line). BASE-side threads are dropped —
+    /// they have no column in mode 2; switch back to mode 1 to see them.
+    local_threads_by_file: Vec<Vec<CommentThread>>,
     /// When true, the body area is replaced by a full-width description page
     /// (PR body + top-level conversation). Toggled with `D`.
     show_description: bool,
@@ -204,14 +226,28 @@ impl ReviewState {
             file_tree,
             visible_rows,
             status: None,
+            local_threads_by_file: threads_by_file
+                .iter()
+                .map(|tt| {
+                    tt.iter()
+                        .filter(|t| matches!(t.side, CommentSide::Head))
+                        .map(|t| {
+                            let mut clone = t.clone();
+                            clone.side = CommentSide::Base;
+                            clone
+                        })
+                        .collect()
+                })
+                .collect(),
             threads_by_file,
             last_layout_width: DEFAULT_WRAP_WIDTH,
             expanded_threads,
             status_tx,
-            local_panel: false,
+            diff_mode: DiffMode::BaseHead,
             local_diffs: (0..n).map(|_| None).collect(),
+            local_laid: (0..n).map(|_| None).collect(),
             local_scroll: vec![0; n],
-            local_hunk_idx: vec![0; n],
+            local_cursor: vec![0; n],
             show_description: false,
             description_scroll: 0,
             show_help: false,
@@ -231,8 +267,9 @@ impl ReviewState {
     /// isn't on a code line (a row with at least one side line number).
     pub fn start_selection(&mut self) {
         let Some(i) = self.selected_idx() else { return };
-        let cur = self.cursor[i] as usize;
-        let Some(row) = self.laid[i].rows.get(cur) else { return };
+        let cur = self.cursor_at(i) as usize;
+        let Some(laid) = self.laid_at(i) else { return };
+        let Some(row) = laid.rows.get(cur) else { return };
         // Pick the side that has a line number under the cursor.
         // Prefer HEAD because that's where most comments naturally land.
         let side = if row.head_line.is_some() {
@@ -248,7 +285,7 @@ impl ReviewState {
         };
         self.selection = Some(Selection {
             file_idx: i,
-            anchor: self.cursor[i],
+            anchor: self.cursor_at(i),
             side,
         });
         self.set_status(
@@ -274,7 +311,7 @@ impl ReviewState {
         if sel.file_idx != i {
             return None;
         }
-        let cur = self.cursor[i];
+        let cur = self.cursor_at(i);
         let lo = sel.anchor.min(cur) as usize;
         let hi = sel.anchor.max(cur) as usize;
         Some((lo, hi, sel.side))
@@ -291,7 +328,8 @@ impl ReviewState {
         let i = self.selected_idx()?;
         let mut start: Option<u32> = None;
         let mut end: Option<u32> = None;
-        for row in &self.laid[i].rows[lo..=hi] {
+        let laid = self.laid_at(i)?;
+        for row in &laid.rows[lo..=hi] {
             let line = match side {
                 CommentSide::Head => row.head_line,
                 CommentSide::Base => row.base_line,
@@ -402,15 +440,82 @@ impl ReviewState {
         self.set_status(msg, StatusKind::Success);
     }
 
-    /// Toggle the LOCAL diff panel. On first show (or after the cursor moves
-    /// to a file with no cached local diff), the diff is computed lazily.
-    pub fn toggle_local_panel(&mut self) {
-        self.local_panel = !self.local_panel;
-        if self.local_panel {
-            self.ensure_local_for_current();
-        } else if self.focus == Focus::Local {
-            self.focus = Focus::Head;
+    /// Cursor row for file `i` in the active mode.
+    fn cursor_at(&self, i: usize) -> u16 {
+        match self.diff_mode {
+            DiffMode::BaseHead => self.cursor[i],
+            DiffMode::HeadLocal => self.local_cursor[i],
         }
+    }
+
+    fn set_cursor(&mut self, i: usize, value: u16) {
+        match self.diff_mode {
+            DiffMode::BaseHead => self.cursor[i] = value,
+            DiffMode::HeadLocal => self.local_cursor[i] = value,
+        }
+    }
+
+    fn scroll_at(&self, i: usize) -> u16 {
+        match self.diff_mode {
+            DiffMode::BaseHead => self.scroll[i],
+            DiffMode::HeadLocal => self.local_scroll[i],
+        }
+    }
+
+    fn set_scroll(&mut self, i: usize, value: u16) {
+        match self.diff_mode {
+            DiffMode::BaseHead => self.scroll[i] = value,
+            DiffMode::HeadLocal => self.local_scroll[i] = value,
+        }
+    }
+
+    /// Active-mode laid-out diff for file `i`. Returns None when mode 2's
+    /// local layout hasn't been computed yet (caller should
+    /// `ensure_local_for_current` before drawing).
+    fn laid_at(&self, i: usize) -> Option<&LaidOutDiff> {
+        match self.diff_mode {
+            DiffMode::BaseHead => self.laid.get(i),
+            DiffMode::HeadLocal => self.local_laid.get(i).and_then(|x| x.as_ref()),
+        }
+    }
+
+    /// Active-mode FileDiff for file `i`. Mode 2 may be missing if not yet
+    /// computed — caller should treat it as "no local changes" (empty diff).
+    fn diff_at(&self, i: usize) -> Option<&FileDiff> {
+        match self.diff_mode {
+            DiffMode::BaseHead => self.diffs.get(i),
+            DiffMode::HeadLocal => self.local_diffs.get(i).and_then(|x| x.as_ref()),
+        }
+    }
+
+    fn threads_at(&self, i: usize) -> &[CommentThread] {
+        match self.diff_mode {
+            DiffMode::BaseHead => self.threads_by_file.get(i).map(|v| v.as_slice()).unwrap_or(&[]),
+            DiffMode::HeadLocal => self.local_threads_by_file.get(i).map(|v| v.as_slice()).unwrap_or(&[]),
+        }
+    }
+
+    /// Toggle between BaseHead (PR diff) and HeadLocal (your edits) modes.
+    /// On first switch to HeadLocal for a file, the head→worktree diff and
+    /// its laid-out form are computed lazily.
+    pub fn toggle_diff_mode(&mut self) {
+        self.diff_mode = match self.diff_mode {
+            DiffMode::BaseHead => DiffMode::HeadLocal,
+            DiffMode::HeadLocal => DiffMode::BaseHead,
+        };
+        self.clear_selection();
+        if matches!(self.diff_mode, DiffMode::HeadLocal) {
+            self.ensure_local_for_current();
+        }
+        let msg = match self.diff_mode {
+            DiffMode::BaseHead => "PR diff (BASE → HEAD)",
+            DiffMode::HeadLocal => "Local diff (HEAD → WORK)",
+        };
+        self.set_status(msg, StatusKind::Success);
+    }
+
+    pub fn diff_mode(&self) -> DiffMode {
+        self.diff_mode
     }
 
     /// Recompute the local diff for the file under the cursor.
@@ -428,13 +533,26 @@ impl ReviewState {
         if self.local_diffs[i].is_none() {
             self.compute_local_for(i);
         }
+        if self.local_laid[i].is_none() {
+            self.relayout_local_for(i);
+        }
     }
 
-    /// Recompute the BASE/HEAD diff and the LOCAL diff for the file under the
-    /// cursor. Called after the editor handoff so worktree edits are reflected
-    /// without restarting prowler.
-    pub fn local_panel_visible(&self) -> bool {
-        self.local_panel
+    fn relayout_local_for(&mut self, i: usize) {
+        let Some(diff) = self.local_diffs[i].as_ref() else {
+            return;
+        };
+        let wrap_width = self
+            .last_layout_width
+            .saturating_sub(PANE_CHROME_COLS)
+            .max(MIN_WRAP_WIDTH) as usize;
+        self.local_laid[i] = Some(LaidOutDiff::from_file(
+            diff,
+            &self.local_threads_by_file[i],
+            wrap_width,
+            &self.expanded_threads,
+            self.session.hide_resolved,
+        ));
     }
 
     pub fn refresh_after_edit(&mut self, side: Side) {
@@ -498,6 +616,11 @@ impl ReviewState {
         };
         self.local_diffs[file_idx] = diff;
         self.local_scroll[file_idx] = 0;
+        self.local_cursor[file_idx] = 0;
+        self.local_laid[file_idx] = None;
+        // Lay out immediately so render doesn't see a None when the user is in
+        // mode 2.
+        self.relayout_local_for(file_idx);
     }
 
     /// Toggle the expansion state of the comment thread under the cursor.
@@ -506,12 +629,9 @@ impl ReviewState {
         let Some(i) = self.selected_idx() else {
             return;
         };
-        let cur = self.cursor[i] as usize;
-        let Some(thread_id) = self.laid[i]
-            .rows
-            .get(cur)
-            .and_then(|r| r.thread_id.clone())
-        else {
+        let cur = self.cursor_at(i) as usize;
+        let Some(laid) = self.laid_at(i) else { return };
+        let Some(thread_id) = laid.rows.get(cur).and_then(|r| r.thread_id.clone()) else {
             return;
         };
         if !self.expanded_threads.remove(&thread_id) {
@@ -566,19 +686,30 @@ impl ReviewState {
     /// a rendered comment thread (header, body, or terminator row). Used by `r`.
     pub fn reply_target(&self) -> Option<String> {
         let i = self.selected_idx()?;
-        let cur = self.cursor[i] as usize;
-        self.laid[i].rows.get(cur)?.thread_id.clone()
+        let cur = self.cursor_at(i) as usize;
+        self.laid_at(i)?.rows.get(cur)?.thread_id.clone()
     }
 
     pub fn comment_target(&self) -> Option<(String, CommentSide, u32)> {
         let i = self.selected_idx()?;
-        let cur = self.cursor[i] as usize;
-        let row = self.laid[i].rows.get(cur)?;
+        let cur = self.cursor_at(i) as usize;
+        let row = self.laid_at(i)?.rows.get(cur)?;
         let path = self.diffs[i].path.clone();
-        if let Some(line) = row.head_line {
-            Some((path, CommentSide::Head, line))
-        } else {
-            row.base_line.map(|line| (path, CommentSide::Base, line))
+        // In HeadLocal mode, the diff is head→worktree: `base_line` is the HEAD
+        // line, `head_line` is the worktree line. Comments must anchor on the
+        // HEAD line (base_line of mode 2's diff), so we always anchor on Head
+        // side regardless of which column the cursor is on.
+        match self.diff_mode {
+            DiffMode::BaseHead => {
+                if let Some(line) = row.head_line {
+                    Some((path, CommentSide::Head, line))
+                } else {
+                    row.base_line.map(|line| (path, CommentSide::Base, line))
+                }
+            }
+            DiffMode::HeadLocal => row
+                .base_line
+                .map(|line| (path, CommentSide::Head, line)),
         }
     }
 
@@ -612,6 +743,23 @@ impl ReviewState {
             }
         }
         self.threads_by_file = threads_by_file;
+        // Mode-2 thread groups: HEAD-side threads only, with `side` remapped to
+        // `Base` so attach_threads matches them on the head→worktree diff's
+        // `old_line` (which is the HEAD line).
+        self.local_threads_by_file = self
+            .threads_by_file
+            .iter()
+            .map(|tt| {
+                tt.iter()
+                    .filter(|t| matches!(t.side, CommentSide::Head))
+                    .map(|t| {
+                        let mut clone = t.clone();
+                        clone.side = CommentSide::Base;
+                        clone
+                    })
+                    .collect()
+            })
+            .collect();
         crate::diff::enrich_with_orphan_context(
             &self.repo_root,
             &self.meta.base_sha,
@@ -620,6 +768,11 @@ impl ReviewState {
             &self.threads_by_file,
         );
         self.relayout();
+        // Invalidate any cached mode-2 layouts so they pick up the new threads
+        // on next render.
+        for slot in self.local_laid.iter_mut() {
+            *slot = None;
+        }
     }
 
     /// Lines of source code at the given anchor, formatted as `NNN: text` and
@@ -732,10 +885,9 @@ impl ReviewState {
         let Some(i) = self.selected_idx() else {
             return false;
         };
-        let cur = self.cursor[i] as usize;
-        self.laid[i]
-            .rows
-            .get(cur)
+        let cur = self.cursor_at(i) as usize;
+        self.laid_at(i)
+            .and_then(|laid| laid.rows.get(cur))
             .map(|r| r.thread_id.is_some())
             .unwrap_or(false)
     }
@@ -744,8 +896,11 @@ impl ReviewState {
         let Some(i) = self.selected_idx() else {
             return false;
         };
-        let cur = self.cursor[i] as usize;
-        let Some(row) = self.laid[i].rows.get(cur) else {
+        let cur = self.cursor_at(i) as usize;
+        let Some(laid) = self.laid_at(i) else {
+            return false;
+        };
+        let Some(row) = laid.rows.get(cur) else {
             return false;
         };
         row.thread_id.is_none() && (row.base_line.is_some() || row.head_line.is_some())
@@ -754,10 +909,10 @@ impl ReviewState {
     /// The thread under the cursor, if any.
     pub fn current_thread(&self) -> Option<&CommentThread> {
         let i = self.selected_idx()?;
-        let cur = self.cursor[i] as usize;
-        let row = self.laid[i].rows.get(cur)?;
+        let cur = self.cursor_at(i) as usize;
+        let row = self.laid_at(i)?.rows.get(cur)?;
         let tid = row.thread_id.as_deref()?;
-        self.threads_by_file[i].iter().find(|t| t.id == tid)
+        self.threads_at(i).iter().find(|t| t.id == tid)
     }
 
     /// The (thread_id, is_resolved) of the thread under the cursor.
@@ -793,11 +948,11 @@ impl ReviewState {
     /// authored it (i.e. the viewer can edit / delete it).
     pub fn current_own_comment(&self) -> Option<(String, String)> {
         let i = self.selected_idx()?;
-        let cur = self.cursor[i] as usize;
-        let row = self.laid[i].rows.get(cur)?;
+        let cur = self.cursor_at(i) as usize;
+        let row = self.laid_at(i)?.rows.get(cur)?;
         let cid = row.comment_id.as_deref()?;
         let tid = row.thread_id.as_deref()?;
-        let thread = self.threads_by_file[i].iter().find(|t| t.id == tid)?;
+        let thread = self.threads_at(i).iter().find(|t| t.id == tid)?;
         let comment = thread.comments.iter().find(|c| c.id == cid)?;
         if !comment.viewer_did_author {
             return None;
@@ -813,12 +968,16 @@ impl ReviewState {
         &self,
     ) -> Option<(String, std::path::PathBuf, u32, u32)> {
         let i = self.selected_idx()?;
-        let cur = self.cursor[i] as usize;
-        let row = self.laid[i].rows.get(cur)?;
+        let cur = self.cursor_at(i) as usize;
+        let row = self.laid_at(i)?.rows.get(cur)?;
         let cid = row.comment_id.as_deref()?;
         let tid = row.thread_id.as_deref()?;
-        let thread = self.threads_by_file[i].iter().find(|t| t.id == tid)?;
-        if thread.side != CommentSide::Head {
+        let thread = self.threads_at(i).iter().find(|t| t.id == tid)?;
+        // Suggestions only make sense on HEAD-side comments. In mode 2 we
+        // already remap HEAD-side threads to `Base` for layout, so check both.
+        let usable = matches!(thread.side, CommentSide::Head)
+            || matches!(self.diff_mode, DiffMode::HeadLocal);
+        if !usable {
             return None;
         }
         let comment = thread.comments.iter().find(|c| c.id == cid)?;
@@ -970,8 +1129,8 @@ impl ReviewState {
     pub fn editor_target(&self, side: Side) -> Option<EditorTarget> {
         let i = self.selected_idx()?;
         let file = &self.diffs[i];
-        let laid = &self.laid[i];
-        let cur = self.cursor[i] as usize;
+        let laid = self.laid_at(i)?;
+        let cur = self.cursor_at(i) as usize;
 
         let pick = |row: &crate::tui::diff_view::Row| match side {
             Side::Base => row.base_line,
@@ -1000,22 +1159,18 @@ impl ReviewState {
     }
 
     pub fn cycle_focus(&mut self) {
-        self.focus = match (self.focus, self.local_panel) {
-            (Focus::Files, _) => Focus::Base,
-            (Focus::Base, _) => Focus::Head,
-            (Focus::Head, true) => Focus::Local,
-            (Focus::Head, false) => Focus::Files,
-            (Focus::Local, _) => Focus::Files,
+        self.focus = match self.focus {
+            Focus::Files => Focus::Base,
+            Focus::Base => Focus::Head,
+            Focus::Head => Focus::Files,
         };
     }
 
     pub fn cycle_focus_back(&mut self) {
-        self.focus = match (self.focus, self.local_panel) {
-            (Focus::Files, true) => Focus::Local,
-            (Focus::Files, false) => Focus::Head,
-            (Focus::Base, _) => Focus::Files,
-            (Focus::Head, _) => Focus::Base,
-            (Focus::Local, _) => Focus::Head,
+        self.focus = match self.focus {
+            Focus::Files => Focus::Head,
+            Focus::Base => Focus::Files,
+            Focus::Head => Focus::Base,
         };
     }
 
@@ -1031,7 +1186,6 @@ impl ReviewState {
         match self.focus {
             Focus::Files => self.next_file(),
             Focus::Base | Focus::Head => self.move_cursor(1),
-            Focus::Local => self.scroll_local(1),
         }
     }
 
@@ -1043,17 +1197,7 @@ impl ReviewState {
         match self.focus {
             Focus::Files => self.prev_file(),
             Focus::Base | Focus::Head => self.move_cursor(-1),
-            Focus::Local => self.scroll_local(-1),
         }
-    }
-
-    fn scroll_local(&mut self, delta: i32) {
-        let Some(i) = self.selected_idx() else {
-            return;
-        };
-        let cur = self.local_scroll[i] as i32;
-        let next = (cur + delta).max(0) as u16;
-        self.local_scroll[i] = next;
     }
 
     fn next_file(&mut self) {
@@ -1063,7 +1207,7 @@ impl ReviewState {
         let i = self.list_state.selected().unwrap_or(0);
         let next = (i + 1).min(self.visible_rows.len() - 1);
         self.list_state.select(Some(next));
-        if self.local_panel {
+        if matches!(self.diff_mode, DiffMode::HeadLocal) {
             self.ensure_local_for_current();
         }
     }
@@ -1074,7 +1218,7 @@ impl ReviewState {
         }
         let i = self.list_state.selected().unwrap_or(0);
         self.list_state.select(Some(i.saturating_sub(1)));
-        if self.local_panel {
+        if matches!(self.diff_mode, DiffMode::HeadLocal) {
             self.ensure_local_for_current();
         }
     }
@@ -1091,10 +1235,11 @@ impl ReviewState {
 
     fn move_cursor(&mut self, delta: i32) {
         let Some(i) = self.selected_idx() else { return };
-        let last = self.laid[i].rows.len().saturating_sub(1) as i32;
-        let cur = self.cursor[i] as i32;
+        let Some(laid) = self.laid_at(i) else { return };
+        let last = laid.rows.len().saturating_sub(1) as i32;
+        let cur = self.cursor_at(i) as i32;
         let next = (cur + delta).clamp(0, last.max(0)) as u16;
-        self.cursor[i] = next;
+        self.set_cursor(i, next);
         self.ensure_cursor_visible(i);
     }
 
@@ -1103,19 +1248,19 @@ impl ReviewState {
         if visible == 0 {
             return;
         }
-        let cursor = self.cursor[i];
-        let mut scroll = self.scroll[i];
+        let cursor = self.cursor_at(i);
+        let mut scroll = self.scroll_at(i);
         if cursor < scroll {
             scroll = cursor;
         } else if cursor >= scroll + visible {
             scroll = cursor + 1 - visible;
         }
         let max = self.max_scroll(i);
-        self.scroll[i] = scroll.min(max);
+        self.set_scroll(i, scroll.min(max));
     }
 
     fn max_scroll(&self, i: usize) -> u16 {
-        let rows = self.laid[i].rows.len() as u16;
+        let rows = self.laid_at(i).map(|l| l.rows.len()).unwrap_or(0) as u16;
         let visible = self.last_pane_height.saturating_sub(2); // borders
         rows.saturating_sub(visible)
     }
@@ -1210,88 +1355,59 @@ impl ReviewState {
 
     pub fn next_hunk(&mut self) {
         let Some(i) = self.selected_idx() else { return };
-        if matches!(self.focus, Focus::Local) {
-            if let Some(diff) = self.local_diffs[i].as_ref() {
-                let total = diff.hunks.len();
-                if total > 0 {
-                    self.local_hunk_idx[i] = (self.local_hunk_idx[i] + 1).min(total - 1);
-                }
-            }
-            return;
-        }
-        let cur = self.cursor[i];
-        if let Some(&next) = self.laid[i]
-            .hunk_starts
-            .iter()
-            .find(|&&s| (s as u16) > cur)
-        {
-            self.cursor[i] = next as u16;
+        let cur = self.cursor_at(i);
+        let Some(laid) = self.laid_at(i) else { return };
+        if let Some(&next) = laid.hunk_starts.iter().find(|&&s| (s as u16) > cur) {
+            self.set_cursor(i, next as u16);
             self.ensure_cursor_visible(i);
         }
     }
 
     pub fn prev_hunk(&mut self) {
         let Some(i) = self.selected_idx() else { return };
-        if matches!(self.focus, Focus::Local) {
-            self.local_hunk_idx[i] = self.local_hunk_idx[i].saturating_sub(1);
-            return;
-        }
-        let cur = self.cursor[i];
-        if let Some(&prev) = self.laid[i]
-            .hunk_starts
-            .iter()
-            .rev()
-            .find(|&&s| (s as u16) < cur)
-        {
-            self.cursor[i] = prev as u16;
+        let cur = self.cursor_at(i);
+        let Some(laid) = self.laid_at(i) else { return };
+        if let Some(&prev) = laid.hunk_starts.iter().rev().find(|&&s| (s as u16) < cur) {
+            self.set_cursor(i, prev as u16);
             self.ensure_cursor_visible(i);
         }
     }
 
-    /// Build a `addPullRequestReviewThread` payload from the currently-selected
-    /// local hunk: HEAD line range + a `\`\`\`suggestion ` body containing the
-    /// new (worktree-side) content.
+    /// Build a `\`\`\`suggestion ` body from the currently-selected rows in
+    /// HeadLocal mode. Returns `(path, start_line, end_line, body)` where
+    /// start/end are HEAD lines and body is the worktree content of the
+    /// selection wrapped in a suggestion fence.
     ///
-    /// Returns None when:
-    /// - LOCAL pane isn't visible / focus isn't Local.
-    /// - There's no local diff for the current file.
-    /// - The hunk has no anchor lines (pure addition with no surrounding
-    ///   context — rare since `similar` produces 3 lines of context).
-    pub fn local_suggestion_target(&self) -> Option<(String, u32, u32, String)> {
-        use crate::diff::{DiffLine, parse_hunk_header};
-        if !matches!(self.focus, Focus::Local) {
+    /// Returns None when not in HeadLocal mode, no selection active, or the
+    /// selection has no rows with HEAD-line anchors (e.g. pure addition with
+    /// no surrounding context).
+    pub fn suggestion_from_selection(&self) -> Option<(String, u32, u32, String)> {
+        if !matches!(self.diff_mode, DiffMode::HeadLocal) {
             return None;
         }
+        let (lo, hi, _side) = self.selection_range()?;
         let i = self.selected_idx()?;
-        let local = self.local_diffs.get(i)?.as_ref()?;
-        let hunk_idx = *self.local_hunk_idx.get(i)?;
-        let hunk = local.hunks.get(hunk_idx)?;
-        let (mut old_line, mut _new_line) = parse_hunk_header(&hunk.header)?;
+        let laid = self.laid_at(i)?;
 
         let mut anchor_min: Option<u32> = None;
         let mut anchor_max: Option<u32> = None;
         let mut body_lines: Vec<String> = Vec::new();
 
-        for line in &hunk.lines {
-            match line {
-                DiffLine::Context(t) | DiffLine::Moved(t) => {
-                    anchor_min.get_or_insert(old_line);
-                    anchor_max = Some(old_line);
+        for row in &laid.rows[lo..=hi] {
+            // base_line in mode 2 is the HEAD line (head_sha is the diff's old).
+            if let Some(l) = row.base_line {
+                anchor_min.get_or_insert(l);
+                anchor_max = Some(l);
+            }
+            // The worktree content lives in the right column (head_line of the
+            // mode-2 diff = worktree line). Pull the cell text for that side.
+            use crate::tui::diff_view::Cell;
+            let cell = &row.head;
+            match cell {
+                Cell::Context(t) | Cell::Added(t) | Cell::Moved(t) => {
                     body_lines.push(t.trim_end_matches('\n').to_owned());
-                    old_line += 1;
-                    _new_line += 1;
                 }
-                DiffLine::Removed(_) => {
-                    anchor_min.get_or_insert(old_line);
-                    anchor_max = Some(old_line);
-                    // Removed = line at HEAD that's gone in worktree — skipped from
-                    // the suggestion body but contributes to the anchor range.
-                    old_line += 1;
-                }
-                DiffLine::Added(t) => {
-                    body_lines.push(t.trim_end_matches('\n').to_owned());
-                    _new_line += 1;
-                }
+                _ => {}
             }
         }
 
@@ -1301,7 +1417,8 @@ impl ReviewState {
             "```suggestion\n{}\n```",
             body_lines.join("\n")
         );
-        Some((local.path.clone(), start, end, body))
+        let path = self.diffs[i].path.clone();
+        Some((path, start, end, body))
     }
 
     fn totals(&self) -> (usize, usize) {
@@ -1359,12 +1476,7 @@ pub fn apply_key(state: &mut ReviewState, key: KeyCode) -> bool {
         KeyCode::Char('1') => state.set_focus(Focus::Files),
         KeyCode::Char('2') => state.set_focus(Focus::Base),
         KeyCode::Char('3') => state.set_focus(Focus::Head),
-        KeyCode::Char('4') => {
-            if state.local_panel {
-                state.set_focus(Focus::Local);
-            }
-        }
-        KeyCode::Char('L') => state.toggle_local_panel(),
+        KeyCode::Char('L') => state.toggle_diff_mode(),
         KeyCode::Char('R') => state.refresh_local(),
         KeyCode::Char('?') => state.toggle_help(),
         KeyCode::Char('D') => state.toggle_description(),
@@ -1661,20 +1773,11 @@ fn pr_state_badge(state: &str, is_draft: bool) -> (&'static str, Color) {
 }
 
 fn render_body(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
-    let constraints: Vec<Constraint> = if state.local_panel {
-        vec![
-            Constraint::Length(36),
-            Constraint::Ratio(1, 3),
-            Constraint::Ratio(1, 3),
-            Constraint::Min(20),
-        ]
-    } else {
-        vec![
-            Constraint::Length(36),
-            Constraint::Percentage(50),
-            Constraint::Min(20),
-        ]
-    };
+    let constraints: Vec<Constraint> = vec![
+        Constraint::Length(36),
+        Constraint::Percentage(50),
+        Constraint::Min(20),
+    ];
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(constraints)
@@ -1685,32 +1788,44 @@ fn render_body(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
 
     render_files(frame, cols[0], state);
 
+    // Make sure mode 2's local diff is computed for the current file. No-op for
+    // mode 1.
+    if matches!(state.diff_mode(), DiffMode::HeadLocal) {
+        if let Some(i) = state.selected_idx() {
+            if state.local_diffs[i].is_none() {
+                state.compute_local_for(i);
+            } else if state.local_laid[i].is_none() {
+                state.relayout_local_for(i);
+            }
+        }
+    }
+
     let i = state.selected_idx();
-    let pair = i.map(|i| (&state.diffs[i], &state.laid[i]));
-    let scroll = i.map(|i| state.scroll[i]).unwrap_or(0);
-    let cursor = i.map(|i| state.cursor[i] as usize);
+    let scroll = i.map(|i| state.scroll_at(i)).unwrap_or(0);
+    let cursor = i.map(|i| state.cursor_at(i) as usize);
+
+    let pair: Option<(&FileDiff, &LaidOutDiff)> = match i {
+        Some(i) => {
+            let diff = state.diff_at(i);
+            let laid = state.laid_at(i);
+            match (diff, laid) {
+                (Some(d), Some(l)) => Some((d, l)),
+                _ => None,
+            }
+        }
+        None => None,
+    };
 
     let sel = state.selection_range();
     let base_sel = sel.and_then(|(lo, hi, side)| (side == CommentSide::Base).then_some((lo, hi)));
     let head_sel = sel.and_then(|(lo, hi, side)| (side == CommentSide::Head).then_some((lo, hi)));
 
-    let (base_title, head_title) = match i {
-        Some(i) => {
-            let d = &state.diffs[i];
-            let new_path = d.path.as_str();
-            let old_path = d.previous_path.as_deref().unwrap_or(new_path);
-            (
-                format!("BASE [2] {old_path}"),
-                format!("HEAD [3] {new_path}"),
-            )
-        }
-        None => ("BASE [2]".to_owned(), "HEAD [3]".to_owned()),
-    };
+    let (left_title, right_title) = pane_titles(state, i);
 
     render_pane(
         frame,
         cols[1],
-        &base_title,
+        &left_title,
         state.focus == Focus::Base,
         pair,
         Side::Base,
@@ -1721,7 +1836,7 @@ fn render_body(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
     render_pane(
         frame,
         cols[2],
-        &head_title,
+        &right_title,
         state.focus == Focus::Head,
         pair,
         Side::Head,
@@ -1729,93 +1844,32 @@ fn render_body(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
         cursor,
         head_sel,
     );
-
-    if state.local_panel {
-        let local_file = i.and_then(|i| state.local_diffs.get(i).and_then(|d| d.as_ref()));
-        let local_scroll = i.map(|i| state.local_scroll[i]).unwrap_or(0);
-        let local_hunk = i.and_then(|i| state.local_hunk_idx.get(i).copied());
-        render_local_pane(
-            frame,
-            cols[3],
-            state.focus == Focus::Local,
-            local_file,
-            local_scroll,
-            local_hunk,
-        );
-    }
 }
 
-fn render_local_pane(
-    frame: &mut Frame,
-    area: Rect,
-    focused: bool,
-    file: Option<&FileDiff>,
-    scroll: u16,
-    selected_hunk: Option<usize>,
-) {
-    use crate::diff::DiffLine;
-    use crate::tui::syntax;
-
-    let title = match (file, selected_hunk) {
-        (Some(f), Some(idx)) if !f.hunks.is_empty() => {
-            format!("LOCAL [4]  hunk {}/{}", idx + 1, f.hunks.len())
+/// Pane titles change with `diff_mode`:
+/// - `BaseHead`: BASE [2] / HEAD [3] (with old/new path on rename).
+/// - `HeadLocal`: HEAD [2] / WORK [3].
+fn pane_titles(state: &ReviewState, i: Option<usize>) -> (String, String) {
+    match (state.diff_mode(), i) {
+        (DiffMode::BaseHead, Some(i)) => {
+            let d = &state.diffs[i];
+            let new_path = d.path.as_str();
+            let old_path = d.previous_path.as_deref().unwrap_or(new_path);
+            (
+                format!("BASE [2] {old_path}"),
+                format!("HEAD [3] {new_path}"),
+            )
         }
-        _ => "LOCAL [4]".to_owned(),
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .border_style(if focused {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        });
-
-    let lines: Vec<Line> = match file {
-        None => vec![Line::styled(
-            "(no local diff yet — press R to refresh)",
-            Style::default().fg(Color::DarkGray),
-        )],
-        Some(f) if f.added == 0 && f.removed == 0 => vec![Line::styled(
-            "(no local changes)",
-            Style::default().fg(Color::DarkGray),
-        )],
-        Some(f) => {
-            let syn = syntax::highlighter();
-            let syntax_ref = syn.syntax_for(&f.path);
-            let mut out = Vec::new();
-            for (idx, hunk) in f.hunks.iter().enumerate() {
-                let is_selected = selected_hunk == Some(idx);
-                let marker = if is_selected { "\u{25B6} " } else { "  " };
-                out.push(Line::from(vec![
-                    Span::styled(marker, Style::default().fg(Color::Cyan)),
-                    Span::styled(
-                        hunk.header.clone(),
-                        Style::default()
-                            .fg(if is_selected { Color::Cyan } else { Color::Magenta })
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]));
-                for line in &hunk.lines {
-                    let (text, marker, fg) = match line {
-                        DiffLine::Added(t) => (t.as_str(), "+ ", Color::Green),
-                        DiffLine::Removed(t) => (t.as_str(), "- ", Color::Red),
-                        DiffLine::Context(t) => (t.as_str(), "  ", Color::Reset),
-                        DiffLine::Moved(t) => (t.as_str(), "~ ", Color::Blue),
-                    };
-                    let trimmed = text.strip_suffix('\n').unwrap_or(text);
-                    let segs = syn.highlight_line(syntax_ref, trimmed);
-                    let mut spans = vec![Span::styled(marker, Style::default().fg(fg))];
-                    spans.extend(syntax::to_spans(&segs, None));
-                    out.push(Line::from(spans));
-                }
-            }
-            out
+        (DiffMode::BaseHead, None) => ("BASE [2]".to_owned(), "HEAD [3]".to_owned()),
+        (DiffMode::HeadLocal, Some(i)) => {
+            let path = state.diffs[i].path.as_str();
+            (
+                format!("HEAD [2] {path}"),
+                format!("WORK [3] {path}"),
+            )
         }
-    };
-
-    let para = Paragraph::new(lines).block(block).scroll((scroll, 0));
-    frame.render_widget(para, area);
+        (DiffMode::HeadLocal, None) => ("HEAD [2]".to_owned(), "WORK [3]".to_owned()),
+    }
 }
 
 /// Build a compact label for a renamed-from path: shows the differing prefix
@@ -1975,17 +2029,13 @@ fn render_hotkeys(frame: &mut Frame, area: Rect, state: &ReviewState) {
                 groups.push(("c", " comment  "));
             }
         }
-        Focus::Local => {
-            groups.push(("j/k", " scroll  "));
-            groups.push(("R", " refresh  "));
-        }
     }
     groups.push(("Tab", " panel  "));
-    if state.local_panel {
-        groups.push(("L", " hide local  "));
-    } else {
-        groups.push(("L", " local  "));
-    }
+    let mode_label = match state.diff_mode() {
+        DiffMode::BaseHead => " base→head  ",
+        DiffMode::HeadLocal => " head→work  ",
+    };
+    groups.push(("L", mode_label));
     groups.push(("S", " submit  "));
     groups.push(("q", " quit"));
 
@@ -2350,42 +2400,9 @@ mod tests {
     }
 
     #[test]
-    fn local_suggestion_target_returns_none_outside_local_focus() {
+    fn suggestion_from_selection_returns_none_in_basehead_mode() {
         let s = state(&["a.rs"], vec![]);
-        assert!(s.local_suggestion_target().is_none());
-    }
-
-    #[test]
-    fn local_suggestion_target_builds_body_from_added_lines() {
-        let mut s = state(&["a.rs"], vec![]);
-        s.set_focus(Focus::Local);
-        // Inject a fake local diff for file 0.
-        s.local_diffs[0] = Some(FileDiff {
-            path: "a.rs".into(),
-            previous_path: None,
-            hunks: vec![Hunk {
-                header: "@@ -10,3 +10,3 @@".into(),
-                is_synthetic: false,
-                lines: vec![
-                    DiffLine::Context("ctx\n".into()),
-                    DiffLine::Removed("old line\n".into()),
-                    DiffLine::Added("new line\n".into()),
-                    DiffLine::Context("after\n".into()),
-                ],
-            }],
-            added: 1,
-            removed: 1,
-        });
-        s.local_hunk_idx[0] = 0;
-        let (path, start, end, body) = s.local_suggestion_target().unwrap();
-        assert_eq!(path, "a.rs");
-        assert_eq!(start, 10);
-        assert_eq!(end, 12);
-        assert!(body.starts_with("```suggestion\n"));
-        assert!(body.contains("new line"));
-        assert!(body.contains("ctx"));
-        assert!(body.contains("after"));
-        assert!(!body.contains("old line"));
+        assert!(s.suggestion_from_selection().is_none());
     }
 
     #[test]
@@ -2535,41 +2552,13 @@ mod tests {
     }
 
     #[test]
-    fn capital_l_toggles_local_panel() {
+    fn capital_l_toggles_diff_mode() {
         let mut s = state(&["a.rs"], vec![]);
-        assert!(!s.local_panel, "local panel off by default");
+        assert_eq!(s.diff_mode(), DiffMode::BaseHead, "BaseHead by default");
         apply_key(&mut s, KeyCode::Char('L'));
-        // We can't actually run `git show` against a fake worktree, so the
-        // toggle still flips the boolean — the diff just stays None and the
-        // pane shows the placeholder.
-        assert!(s.local_panel, "L should turn the pane on");
+        assert_eq!(s.diff_mode(), DiffMode::HeadLocal, "L flips to HeadLocal");
         apply_key(&mut s, KeyCode::Char('L'));
-        assert!(!s.local_panel, "L again should turn the pane off");
-    }
-
-    #[test]
-    fn key_4_switches_focus_to_local_only_when_panel_on() {
-        let mut s = state(&["a.rs"], vec![]);
-        apply_key(&mut s, KeyCode::Char('4'));
-        assert_ne!(s.focus, Focus::Local, "panel off — 4 is a no-op");
-        apply_key(&mut s, KeyCode::Char('L'));
-        apply_key(&mut s, KeyCode::Char('4'));
-        assert_eq!(s.focus, Focus::Local, "panel on — 4 jumps to Local");
-    }
-
-    #[test]
-    fn tab_includes_local_when_panel_on() {
-        let mut s = state(&["a.rs"], vec![]);
-        apply_key(&mut s, KeyCode::Char('L'));
-        // Files -> Base -> Head -> Local -> Files
-        apply_key(&mut s, KeyCode::Tab);
-        assert_eq!(s.focus, Focus::Base);
-        apply_key(&mut s, KeyCode::Tab);
-        assert_eq!(s.focus, Focus::Head);
-        apply_key(&mut s, KeyCode::Tab);
-        assert_eq!(s.focus, Focus::Local);
-        apply_key(&mut s, KeyCode::Tab);
-        assert_eq!(s.focus, Focus::Files);
+        assert_eq!(s.diff_mode(), DiffMode::BaseHead, "L flips back");
     }
 
     #[test]

@@ -510,10 +510,10 @@ fn open_in_editor(
         Ok(()) => {
             state.refresh_after_edit(side);
             if matches!(side, Side::Head) {
-                let hint = if state.local_panel_visible() {
+                let hint = if matches!(state.diff_mode(), review::DiffMode::HeadLocal) {
                     "Diff refreshed"
                 } else {
-                    "Diff refreshed — press L to see your local edits"
+                    "Diff refreshed — press L to switch to head→work view"
                 };
                 state.set_status(hint, review::StatusKind::Success);
             }
@@ -526,8 +526,9 @@ fn post_comment(
     terminal: &mut ratatui::DefaultTerminal,
     state: &mut review::ReviewState,
 ) -> Result<()> {
-    // LOCAL focus: post the current local hunk as a ```suggestion``` comment.
-    if matches!(state.focus, review::Focus::Local) {
+    // In HeadLocal mode with an active selection, post the selected rows as a
+    // `\`\`\`suggestion ` comment.
+    if matches!(state.diff_mode(), review::DiffMode::HeadLocal) && state.selection_active() {
         return post_local_suggestion(terminal, state);
     }
     // If a multi-line selection is active, post a multi-line thread; else
@@ -630,10 +631,10 @@ fn post_local_suggestion(
     terminal: &mut ratatui::DefaultTerminal,
     state: &mut review::ReviewState,
 ) -> Result<()> {
-    let Some((path, start_line, end_line, suggestion_body)) = state.local_suggestion_target()
+    let Some((path, start_line, end_line, suggestion_body)) = state.suggestion_from_selection()
     else {
         state.set_status(
-            "No local hunk to suggest (focus LOCAL, then `]/[` to pick a hunk)",
+            "Selection has no usable lines for a suggestion",
             review::StatusKind::Error,
         );
         return Ok(());
