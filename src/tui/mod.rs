@@ -91,9 +91,7 @@ fn dashboard_loop(
             dashboard::DashboardOutcome::Quit => return Ok(()),
             dashboard::DashboardOutcome::Refresh => {
                 state.set_info("Refreshing dashboard…");
-                terminal
-                    .draw(|frame| dashboard::render(frame, state))
-                    .ok();
+                terminal.draw(|frame| dashboard::render(frame, state)).ok();
                 let res = tokio::task::block_in_place(|| {
                     Handle::current().block_on(crate::github::fetch_dashboard(token, owner, repo))
                 });
@@ -107,9 +105,7 @@ fn dashboard_loop(
             }
             dashboard::DashboardOutcome::Open(pr) | dashboard::DashboardOutcome::OpenLocal(pr) => {
                 state.set_info(format!("Loading PR #{pr}…"));
-                terminal
-                    .draw(|frame| dashboard::render(frame, state))
-                    .ok();
+                terminal.draw(|frame| dashboard::render(frame, state)).ok();
                 let res = open_pr_review(terminal, token, owner, repo, repo_root, pr);
                 if let Err(e) = res {
                     state.set_error(format!("Open #{pr} failed: {e:#}"));
@@ -153,7 +149,11 @@ fn open_pr_review(
     let reused = desired_path.exists();
     if !reused {
         crate::git::fetch_pr_head(repo_root, pr_number)?;
-        crate::git::add_worktree(repo_root, &desired_path, &crate::git::pr_local_ref(pr_number))?;
+        crate::git::add_worktree(
+            repo_root,
+            &desired_path,
+            &crate::git::pr_local_ref(pr_number),
+        )?;
     }
     crate::git::ensure_sha(repo_root, &meta.base_sha)?;
     if !base_path.exists() {
@@ -336,9 +336,7 @@ fn refresh_from_github(
     state: &mut review::ReviewState,
 ) -> Result<()> {
     state.set_status("Refreshing…", review::StatusKind::Info);
-    terminal
-        .draw(|frame| review::render(frame, state))
-        .ok();
+    terminal.draw(|frame| review::render(frame, state)).ok();
     let token = state.token.clone();
     let owner = state.owner.clone();
     let repo = state.repo.clone();
@@ -471,10 +469,7 @@ fn delete_own_comment(state: &mut review::ReviewState) -> Result<()> {
         return Ok(());
     };
     if !state.arm_or_confirm_delete(&comment_id) {
-        state.set_status(
-            "Press X again to confirm delete",
-            review::StatusKind::Error,
-        );
+        state.set_status("Press X again to confirm delete", review::StatusKind::Error);
         return Ok(());
     }
     let token = state.token.clone();
@@ -608,7 +603,7 @@ fn post_comment(
 
     let body = match body {
         Ok(b) if !b.is_empty() => b,
-        Ok(_) => return Ok(()), // empty → silent cancel
+        Ok(_) => return Ok(()),  // empty → silent cancel
         Err(_) => return Ok(()), // editor exited non-zero → silent cancel
     };
 
@@ -706,7 +701,11 @@ fn post_local_suggestion(
     let repo = state.repo.clone();
     let pr_number = state.pr_number();
 
-    let start_param = if start_line == end_line { None } else { Some(start_line) };
+    let start_param = if start_line == end_line {
+        None
+    } else {
+        Some(start_line)
+    };
     let result = tokio::task::block_in_place(|| {
         Handle::current().block_on(async {
             crate::github::post_thread(
@@ -826,9 +825,7 @@ fn submit_review(
     let pr_number = state.pr_number();
 
     let pending_summary = if pending_id.is_some() {
-        format!(
-            "# {pending_count} pending comment(s) will be published as part of this review."
-        )
+        format!("# {pending_count} pending comment(s) will be published as part of this review.")
     } else {
         "# No pending review found — this will create a fresh, verdict-only review.".to_owned()
     };
@@ -864,10 +861,7 @@ fn submit_review(
             log_post_error(&format!(
                 "[FAIL] submit PR #{pr_number}: invalid buffer — {e:#}\n"
             ));
-            state.set_status(
-                format!("Submit cancelled: {e}"),
-                review::StatusKind::Error,
-            );
+            state.set_status(format!("Submit cancelled: {e}"), review::StatusKind::Error);
             return Ok(());
         }
     };
@@ -878,14 +872,8 @@ fn submit_review(
 
     let result = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(async {
-            crate::github::submit_review(
-                &token,
-                &pr_node_id,
-                pending_id.as_deref(),
-                &event,
-                &body,
-            )
-            .await?;
+            crate::github::submit_review(&token, &pr_node_id, pending_id.as_deref(), &event, &body)
+                .await?;
             crate::github::fetch_pr(&token, &owner, &repo, pr_number).await
         })
     });
@@ -919,15 +907,17 @@ fn parse_submit_buffer(text: &str) -> Result<(String, String)> {
         .next()
         .ok_or_else(|| anyhow::anyhow!("missing verdict line"))?;
     let verdict = verdict_line.trim().to_uppercase();
-    if !matches!(
-        verdict.as_str(),
-        "APPROVE" | "COMMENT" | "REQUEST_CHANGES"
-    ) {
+    if !matches!(verdict.as_str(), "APPROVE" | "COMMENT" | "REQUEST_CHANGES") {
         anyhow::bail!(
             "invalid verdict `{verdict}` — expected APPROVE, COMMENT, or REQUEST_CHANGES"
         );
     }
-    let body = iter.copied().collect::<Vec<_>>().join("\n").trim().to_owned();
+    let body = iter
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_owned();
     Ok((verdict, body))
 }
 
@@ -991,9 +981,15 @@ fn spawn_poller(
 fn describe_delta(threads: i64, comments: i64) -> String {
     let mut parts = Vec::new();
     if threads > 0 {
-        parts.push(format!("+{threads} thread{}", if threads == 1 { "" } else { "s" }));
+        parts.push(format!(
+            "+{threads} thread{}",
+            if threads == 1 { "" } else { "s" }
+        ));
     } else if threads < 0 {
-        parts.push(format!("{threads} thread{}", if threads == -1 { "" } else { "s" }));
+        parts.push(format!(
+            "{threads} thread{}",
+            if threads == -1 { "" } else { "s" }
+        ));
     }
     if comments > 0 {
         parts.push(format!(

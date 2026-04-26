@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use octocrab::Octocrab;
 use serde::Deserialize;
 
@@ -365,10 +365,9 @@ mutation($pid: ID!, $path: String!, $line: Int!, $side: DiffSide!, $body: String
     };
 
     let payload = serde_json::json!({ "query": query, "variables": vars });
-    let response: serde_json::Value = octocrab
-        .graphql(&payload)
-        .await
-        .with_context(|| format!("addPullRequestReviewThread request failed for `{path}:{line}`"))?;
+    let response: serde_json::Value = octocrab.graphql(&payload).await.with_context(|| {
+        format!("addPullRequestReviewThread request failed for `{path}:{line}`")
+    })?;
 
     if let Some(errors) = response.get("errors") {
         bail!("addPullRequestReviewThread for `{path}:{line}`: {errors}");
@@ -455,12 +454,9 @@ mutation($threadId: ID!, $body: String!) {
         "variables": { "threadId": thread_id, "body": body },
     });
 
-    let response: serde_json::Value = octocrab
-        .graphql(&payload)
-        .await
-        .with_context(|| {
-            format!("addPullRequestReviewThreadReply request failed for thread {thread_id}")
-        })?;
+    let response: serde_json::Value = octocrab.graphql(&payload).await.with_context(|| {
+        format!("addPullRequestReviewThreadReply request failed for thread {thread_id}")
+    })?;
 
     if let Some(errors) = response.get("errors") {
         bail!("addPullRequestReviewThreadReply for thread {thread_id}: {errors}");
@@ -509,9 +505,15 @@ pub async fn fetch_dashboard(token: &str, owner: &str, repo: &str) -> Result<Das
         "all" => String::new(),
         _ => format!("repo:{owner}/{repo}"),
     };
-    let req = format!("is:open is:pr review-requested:@me {scope}").trim().to_owned();
-    let auth = format!("is:open is:pr author:@me {scope}").trim().to_owned();
-    let asgn = format!("is:open is:pr assignee:@me {scope}").trim().to_owned();
+    let req = format!("is:open is:pr review-requested:@me {scope}")
+        .trim()
+        .to_owned();
+    let auth = format!("is:open is:pr author:@me {scope}")
+        .trim()
+        .to_owned();
+    let asgn = format!("is:open is:pr assignee:@me {scope}")
+        .trim()
+        .to_owned();
 
     let payload = serde_json::json!({
         "query": DASHBOARD_QUERY,
@@ -525,9 +527,24 @@ pub async fn fetch_dashboard(token: &str, owner: &str, repo: &str) -> Result<Das
     let data = response.into_data()?;
 
     let mut out = DashboardData {
-        review_requested: data.review_requested.nodes.into_iter().filter_map(into_dashboard_pr).collect(),
-        authored: data.authored.nodes.into_iter().filter_map(into_dashboard_pr).collect(),
-        assigned: data.assigned.nodes.into_iter().filter_map(into_dashboard_pr).collect(),
+        review_requested: data
+            .review_requested
+            .nodes
+            .into_iter()
+            .filter_map(into_dashboard_pr)
+            .collect(),
+        authored: data
+            .authored
+            .nodes
+            .into_iter()
+            .filter_map(into_dashboard_pr)
+            .collect(),
+        assigned: data
+            .assigned
+            .nodes
+            .into_iter()
+            .filter_map(into_dashboard_pr)
+            .collect(),
     };
     let by_recent = |a: &DashboardPr, b: &DashboardPr| b.updated_at.cmp(&a.updated_at);
     out.review_requested.sort_by(by_recent);
@@ -541,7 +558,10 @@ fn into_dashboard_pr(node: GqlSearchNode) -> Option<DashboardPr> {
     Some(DashboardPr {
         number: pr.number,
         title: pr.title,
-        author: pr.author.map(|a| a.login).unwrap_or_else(|| "unknown".to_string()),
+        author: pr
+            .author
+            .map(|a| a.login)
+            .unwrap_or_else(|| "unknown".to_string()),
         is_draft: pr.is_draft,
         updated_at: pr.updated_at.format("%Y-%m-%d %H:%M").to_string(),
         additions: pr.additions,

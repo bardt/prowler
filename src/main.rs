@@ -47,8 +47,8 @@ async fn main() -> Result<()> {
 }
 
 async fn dashboard() -> Result<()> {
-    let repo = Repository::discover(".")
-        .context("not inside a git repository (could not find .git)")?;
+    let repo =
+        Repository::discover(".").context("not inside a git repository (could not find .git)")?;
     let repo_root = repo
         .workdir()
         .context("repository has no working directory")?
@@ -64,8 +64,8 @@ async fn dashboard() -> Result<()> {
 }
 
 async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
-    let repo = Repository::discover(".")
-        .context("not inside a git repository (could not find .git)")?;
+    let repo =
+        Repository::discover(".").context("not inside a git repository (could not find .git)")?;
 
     let repo_root = repo
         .workdir()
@@ -177,7 +177,9 @@ async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    tui::run(meta, diffs, threads, session, repo_root, token, owner, repo_name)
+    tui::run(
+        meta, diffs, threads, session, repo_root, token, owner, repo_name,
+    )
 }
 
 fn do_cleanup(repo_root: &std::path::Path, pr_number: u64) -> Result<()> {

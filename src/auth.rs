@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::process::Command;
 
 pub fn resolve_token() -> Result<String> {
@@ -42,8 +42,8 @@ fn gh_auth_status_token() -> Result<String> {
     }
 
     // gh writes status output to stderr
-    let text = String::from_utf8(output.stderr)
-        .context("`gh auth status` output was not valid UTF-8")?;
+    let text =
+        String::from_utf8(output.stderr).context("`gh auth status` output was not valid UTF-8")?;
 
     // Output contains a line like: "  ✓ Token: ghp_xxxx"
     text

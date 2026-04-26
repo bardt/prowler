@@ -21,7 +21,10 @@ const BG_SUGGESTION: Color = Color::Rgb(160, 220, 160);
 #[derive(Clone)]
 pub enum Cell {
     Empty,
-    HunkHeader { text: String, is_synthetic: bool },
+    HunkHeader {
+        text: String,
+        is_synthetic: bool,
+    },
     Context(String),
     Added(String),
     Removed(String),
@@ -101,8 +104,7 @@ impl LaidOutDiff {
                 comment_id: None,
             });
 
-            let (mut old_line, mut new_line) =
-                parse_hunk_header(&hunk.header).unwrap_or((1, 1));
+            let (mut old_line, mut new_line) = parse_hunk_header(&hunk.header).unwrap_or((1, 1));
 
             let lines = &hunk.lines;
             let mut i = 0;
@@ -117,7 +119,15 @@ impl LaidOutDiff {
                             thread_id: None,
                             comment_id: None,
                         });
-                        attach_threads(&mut rows, threads, Some(old_line), Some(new_line), wrap_width, expanded, hide_resolved);
+                        attach_threads(
+                            &mut rows,
+                            threads,
+                            Some(old_line),
+                            Some(new_line),
+                            wrap_width,
+                            expanded,
+                            hide_resolved,
+                        );
                         old_line += 1;
                         new_line += 1;
                         i += 1;
@@ -131,7 +141,15 @@ impl LaidOutDiff {
                             thread_id: None,
                             comment_id: None,
                         });
-                        attach_threads(&mut rows, threads, Some(old_line), Some(new_line), wrap_width, expanded, hide_resolved);
+                        attach_threads(
+                            &mut rows,
+                            threads,
+                            Some(old_line),
+                            Some(new_line),
+                            wrap_width,
+                            expanded,
+                            hide_resolved,
+                        );
                         old_line += 1;
                         new_line += 1;
                         i += 1;
@@ -167,7 +185,15 @@ impl LaidOutDiff {
                                 thread_id: None,
                                 comment_id: None,
                             });
-                            attach_threads(&mut rows, threads, base_line, head_line, wrap_width, expanded, hide_resolved);
+                            attach_threads(
+                                &mut rows,
+                                threads,
+                                base_line,
+                                head_line,
+                                wrap_width,
+                                expanded,
+                                hide_resolved,
+                            );
                         }
                     }
                 }
@@ -238,7 +264,10 @@ fn attach_threads(
                 push_comment_row(
                     rows,
                     thread.side,
-                    Cell::CommentBody { text: String::new(), in_suggestion: false },
+                    Cell::CommentBody {
+                        text: String::new(),
+                        in_suggestion: false,
+                    },
                     &thread.id,
                     Some(&comment.id),
                 );
@@ -248,7 +277,8 @@ fn attach_threads(
                     let trimmed = body_line.trim_start();
                     let is_fence = trimmed.starts_with("```");
                     let is_suggest_open = is_fence
-                        && trimmed.trim_end_matches(|c: char| c.is_whitespace())
+                        && trimmed
+                            .trim_end_matches(|c: char| c.is_whitespace())
                             .strip_prefix("```")
                             .map(|s| s.trim() == "suggestion")
                             .unwrap_or(false);
@@ -483,8 +513,15 @@ fn render_cell<'a>(cell: &'a Cell, syntax: &syntect::parsing::SyntaxReference) -
     let syn = syntax::highlighter();
     match cell {
         Cell::Empty => Line::raw(""),
-        Cell::HunkHeader { text: h, is_synthetic } => {
-            let color = if *is_synthetic { Color::DarkGray } else { Color::Magenta };
+        Cell::HunkHeader {
+            text: h,
+            is_synthetic,
+        } => {
+            let color = if *is_synthetic {
+                Color::DarkGray
+            } else {
+                Color::Magenta
+            };
             Line::from(vec![
                 Span::raw(" "),
                 Span::styled(
@@ -510,7 +547,11 @@ fn render_cell<'a>(cell: &'a Cell, syntax: &syntect::parsing::SyntaxReference) -
             is_resolved,
         } => {
             let lead = if *is_root { "\u{250C} " } else { "\u{251C} " };
-            let header_color = if *is_resolved { Color::DarkGray } else { Color::Yellow };
+            let header_color = if *is_resolved {
+                Color::DarkGray
+            } else {
+                Color::Yellow
+            };
             let mut spans = vec![
                 Span::styled(lead, Style::default().fg(header_color)),
                 Span::styled(
@@ -549,7 +590,10 @@ fn render_cell<'a>(cell: &'a Cell, syntax: &syntect::parsing::SyntaxReference) -
             }
             Line::from(spans)
         }
-        Cell::CommentBody { text, in_suggestion } => {
+        Cell::CommentBody {
+            text,
+            in_suggestion,
+        } => {
             if *in_suggestion {
                 Line::from(vec![
                     Span::styled("\u{2502} ", Style::default().fg(Color::Yellow)),
@@ -565,17 +609,20 @@ fn render_cell<'a>(cell: &'a Cell, syntax: &syntect::parsing::SyntaxReference) -
                 ])
             }
         }
-        Cell::CommentEnd => Line::from(Span::styled(
-            "\u{2514}",
-            Style::default().fg(Color::Yellow),
-        )),
+        Cell::CommentEnd => {
+            Line::from(Span::styled("\u{2514}", Style::default().fg(Color::Yellow)))
+        }
         Cell::CollapsedThread {
             text,
             has_pending,
             is_outdated,
             is_resolved,
         } => {
-            let header_color = if *is_resolved { Color::DarkGray } else { Color::Yellow };
+            let header_color = if *is_resolved {
+                Color::DarkGray
+            } else {
+                Color::Yellow
+            };
             let mut spans = vec![
                 Span::styled("\u{25B8} ", Style::default().fg(header_color)),
                 Span::styled(

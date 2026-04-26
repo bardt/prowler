@@ -32,8 +32,15 @@ pub struct VisibleRow {
 #[derive(Clone, Debug)]
 pub enum VisibleItem {
     /// `path` indexes from `tree.roots` down through `Folder.children` to find this folder.
-    Folder { path: Vec<usize>, name: String, collapsed: bool },
-    File { diff_idx: usize, name: String },
+    Folder {
+        path: Vec<usize>,
+        name: String,
+        collapsed: bool,
+    },
+    File {
+        diff_idx: usize,
+        name: String,
+    },
 }
 
 impl FileTree {
@@ -65,7 +72,14 @@ impl FileTree {
             .filter(|s| !s.is_empty());
         let mut rows = Vec::new();
         let mut path = Vec::new();
-        collect_visible_filtered(&self.roots, 0, &mut path, &mut rows, needle.as_deref(), diff_paths);
+        collect_visible_filtered(
+            &self.roots,
+            0,
+            &mut path,
+            &mut rows,
+            needle.as_deref(),
+            diff_paths,
+        );
         rows
     }
 
@@ -207,7 +221,14 @@ fn collect_visible_filtered(
                         },
                     });
                     if !f.collapsed {
-                        collect_visible_filtered(&f.children, depth + 1, path, out, needle, diff_paths);
+                        collect_visible_filtered(
+                            &f.children,
+                            depth + 1,
+                            path,
+                            out,
+                            needle,
+                            diff_paths,
+                        );
                     }
                 }
             }

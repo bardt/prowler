@@ -52,10 +52,7 @@ pub fn highlighter() -> &'static Highlighter {
 
 /// Convert syntect-styled segments to ratatui spans, applying an optional
 /// override background (used to colour the row by diff status).
-pub fn to_spans<'a>(
-    segments: &[(SynStyle, &'a str)],
-    bg_override: Option<Color>,
-) -> Vec<Span<'a>> {
+pub fn to_spans<'a>(segments: &[(SynStyle, &'a str)], bg_override: Option<Color>) -> Vec<Span<'a>> {
     segments
         .iter()
         .map(|(syn, text)| {

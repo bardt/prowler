@@ -52,15 +52,19 @@ impl Session {
         }
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
-        let session = toml::from_str(&text)
-            .with_context(|| format!("failed to parse {}", path.display()))?;
+        let session =
+            toml::from_str(&text).with_context(|| format!("failed to parse {}", path.display()))?;
         Ok(Some(session))
     }
 
     pub fn save(&self, repo_root: &Path) -> Result<()> {
         let path = state_path(repo_root, self.pr_number);
-        std::fs::create_dir_all(path.parent().unwrap())
-            .with_context(|| format!("failed to create session directory for PR #{}", self.pr_number))?;
+        std::fs::create_dir_all(path.parent().unwrap()).with_context(|| {
+            format!(
+                "failed to create session directory for PR #{}",
+                self.pr_number
+            )
+        })?;
         let text = toml::to_string_pretty(self).context("failed to serialize session")?;
         std::fs::write(&path, text)
             .with_context(|| format!("failed to write {}", path.display()))?;

@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::Command;
 
@@ -53,7 +53,10 @@ pub fn compose(prompt: &str) -> Result<String> {
 
     if !status.success() {
         let _ = std::fs::remove_file(&path);
-        bail!("editor `{editor}` exited with {} — comment cancelled", status);
+        bail!(
+            "editor `{editor}` exited with {} — comment cancelled",
+            status
+        );
     }
 
     let raw = std::fs::read_to_string(&path)

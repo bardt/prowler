@@ -198,7 +198,13 @@ impl ReviewState {
             &threads_by_file,
         );
         let expanded_threads: HashSet<String> = session.expanded_threads.iter().cloned().collect();
-        let laid = build_layout(&diffs, &threads_by_file, DEFAULT_WRAP_WIDTH, &expanded_threads, session.hide_resolved);
+        let laid = build_layout(
+            &diffs,
+            &threads_by_file,
+            DEFAULT_WRAP_WIDTH,
+            &expanded_threads,
+            session.hide_resolved,
+        );
         let scroll = vec![0; diffs.len()];
         let cursor: Vec<u16> = diffs
             .iter()
@@ -272,7 +278,9 @@ impl ReviewState {
         let Some(i) = self.selected_idx() else { return };
         let cur = self.cursor_at(i) as usize;
         let Some(laid) = self.laid_at(i) else { return };
-        let Some(row) = laid.rows.get(cur) else { return };
+        let Some(row) = laid.rows.get(cur) else {
+            return;
+        };
         // Pick the side that has a line number under the cursor.
         // Prefer HEAD because that's where most comments naturally land.
         let side = if row.head_line.is_some() {
@@ -324,9 +332,7 @@ impl ReviewState {
     /// `(path, side, start_line, end_line)`. Walks the rows in range, picking
     /// up only those with a line number on the selected side. Returns None
     /// when no usable anchor exists.
-    pub fn multi_line_comment_target(
-        &self,
-    ) -> Option<(String, CommentSide, u32, u32)> {
+    pub fn multi_line_comment_target(&self) -> Option<(String, CommentSide, u32, u32)> {
         let (lo, hi, side) = self.selection_range()?;
         let i = self.selected_idx()?;
         let mut start: Option<u32> = None;
@@ -493,8 +499,16 @@ impl ReviewState {
 
     fn threads_at(&self, i: usize) -> &[CommentThread] {
         match self.diff_mode {
-            DiffMode::BaseHead => self.threads_by_file.get(i).map(|v| v.as_slice()).unwrap_or(&[]),
-            DiffMode::HeadLocal => self.local_threads_by_file.get(i).map(|v| v.as_slice()).unwrap_or(&[]),
+            DiffMode::BaseHead => self
+                .threads_by_file
+                .get(i)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]),
+            DiffMode::HeadLocal => self
+                .local_threads_by_file
+                .get(i)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]),
         }
     }
 
@@ -610,10 +624,7 @@ impl ReviewState {
         ) {
             Ok(mut v) => v.pop(),
             Err(e) => {
-                self.set_status(
-                    format!("Local diff failed: {e}"),
-                    StatusKind::Error,
-                );
+                self.set_status(format!("Local diff failed: {e}"), StatusKind::Error);
                 None
             }
         };
@@ -725,9 +736,7 @@ impl ReviewState {
                     row.base_line.map(|line| (path, CommentSide::Base, line))
                 }
             }
-            DiffMode::HeadLocal => row
-                .base_line
-                .map(|line| (path, CommentSide::Head, line)),
+            DiffMode::HeadLocal => row.base_line.map(|line| (path, CommentSide::Head, line)),
         }
     }
 
@@ -983,9 +992,7 @@ impl ReviewState {
     /// cursor, plus the file path and 1-indexed HEAD line where it should
     /// apply. Only matches threads on the HEAD side, since suggestions replace
     /// the new code, not the old.
-    pub fn current_suggestion_target(
-        &self,
-    ) -> Option<(String, std::path::PathBuf, u32, u32)> {
+    pub fn current_suggestion_target(&self) -> Option<(String, std::path::PathBuf, u32, u32)> {
         let i = self.selected_idx()?;
         let cur = self.cursor_at(i) as usize;
         let row = self.laid_at(i)?.rows.get(cur)?;
@@ -1037,7 +1044,11 @@ impl ReviewState {
         // GitHub's suggestion blocks include one trailing newline that makes the
         // `\`\`\`` close-fence its own line; strip a trailing empty entry if present.
         let mut suggestion_lines = suggestion_lines;
-        if suggestion_lines.last().map(|s| s.is_empty()).unwrap_or(false) {
+        if suggestion_lines
+            .last()
+            .map(|s| s.is_empty())
+            .unwrap_or(false)
+        {
             suggestion_lines.pop();
         }
         lines.splice(start..end, suggestion_lines);
@@ -1045,8 +1056,7 @@ impl ReviewState {
         if trailing_nl {
             out.push('\n');
         }
-        std::fs::write(file, out)
-            .with_context(|| format!("failed to write {}", file.display()))?;
+        std::fs::write(file, out).with_context(|| format!("failed to write {}", file.display()))?;
         Ok(())
     }
 
@@ -1056,14 +1066,10 @@ impl ReviewState {
             .iter()
             .flat_map(|laid| laid.rows.iter())
             .filter_map(|row| match (&row.base, &row.head) {
-                (
-                    crate::tui::diff_view::Cell::CommentHeader { is_pending, .. },
-                    _,
-                )
-                | (
-                    _,
-                    crate::tui::diff_view::Cell::CommentHeader { is_pending, .. },
-                ) => Some(*is_pending),
+                (crate::tui::diff_view::Cell::CommentHeader { is_pending, .. }, _)
+                | (_, crate::tui::diff_view::Cell::CommentHeader { is_pending, .. }) => {
+                    Some(*is_pending)
+                }
                 _ => None,
             })
             .filter(|p| *p)
@@ -1116,7 +1122,11 @@ impl ReviewState {
                 let _ = f.write_all(line.as_bytes());
             }
             if let Err(e) = result {
-                let action = if viewed { "mark viewed" } else { "unmark viewed" };
+                let action = if viewed {
+                    "mark viewed"
+                } else {
+                    "unmark viewed"
+                };
                 let _ = status_tx.send(StatusMessage {
                     text: format!("Sync failed ({action} {path}): {e}"),
                     kind: StatusKind::Error,
@@ -1300,9 +1310,10 @@ impl ReviewState {
             }
         }
         self.visible_rows = self.file_tree.visible_rows();
-        let pos = self.visible_rows.iter().position(|r| {
-            matches!(r.item, VisibleItem::File { diff_idx: d, .. } if d == diff_idx)
-        });
+        let pos = self
+            .visible_rows
+            .iter()
+            .position(|r| matches!(r.item, VisibleItem::File { diff_idx: d, .. } if d == diff_idx));
         if let Some(idx) = pos {
             self.list_state.select(Some(idx));
         }
@@ -1436,10 +1447,7 @@ impl ReviewState {
 
         let start = anchor_min?;
         let end = anchor_max?;
-        let body = format!(
-            "```suggestion\n{}\n```",
-            body_lines.join("\n")
-        );
+        let body = format!("```suggestion\n{}\n```", body_lines.join("\n"));
         let path = self.diffs[i].path.clone();
         Some((path, start, end, body))
     }
@@ -1605,13 +1613,19 @@ fn render_help(frame: &mut Frame, area: Rect) {
                 ("L", "toggle Local pane"),
                 ("R", "refresh Local diff for current file"),
                 ("] / [", "(in LOCAL focus) next / prev local hunk"),
-                ("c", "(in LOCAL focus) post current hunk as ```suggestion``` comment"),
+                (
+                    "c",
+                    "(in LOCAL focus) post current hunk as ```suggestion``` comment",
+                ),
             ],
         ),
         (
             "Review-wide",
             &[
-                ("F5 / Ctrl+R", "re-fetch PR from GitHub (comments, viewed states)"),
+                (
+                    "F5 / Ctrl+R",
+                    "re-fetch PR from GitHub (comments, viewed states)",
+                ),
                 ("S", "submit review (verdict + summary)"),
                 ("?", "toggle this help"),
                 ("D", "toggle description / conversation panel"),
@@ -1742,7 +1756,12 @@ fn render_header(frame: &mut Frame, area: Rect, state: &ReviewState) {
         .iter()
         .filter(|f| {
             matches!(
-                state.session.files.get(&f.path).copied().unwrap_or(FileStatus::Unviewed),
+                state
+                    .session
+                    .files
+                    .get(&f.path)
+                    .copied()
+                    .unwrap_or(FileStatus::Unviewed),
                 FileStatus::Viewed | FileStatus::Skipped
             )
         })
@@ -1886,10 +1905,7 @@ fn pane_titles(state: &ReviewState, i: Option<usize>) -> (String, String) {
         (DiffMode::BaseHead, None) => ("BASE [2]".to_owned(), "HEAD [3]".to_owned()),
         (DiffMode::HeadLocal, Some(i)) => {
             let path = state.diffs[i].path.as_str();
-            (
-                format!("HEAD [2] {path}"),
-                format!("WORK [3] {path}"),
-            )
+            (format!("HEAD [2] {path}"), format!("WORK [3] {path}"))
         }
         (DiffMode::HeadLocal, None) => ("HEAD [2]".to_owned(), "WORK [3]".to_owned()),
     }
@@ -2087,11 +2103,7 @@ impl ReviewState {
     /// Construct a `ReviewState` with stub I/O fields suitable for unit tests.
     /// `Session` and worktree paths are dummies; the status channel's receiver
     /// is dropped, so any background sends are best-effort.
-    pub fn for_test(
-        meta: PrMetadata,
-        diffs: Vec<FileDiff>,
-        threads: Vec<CommentThread>,
-    ) -> Self {
+    pub fn for_test(meta: PrMetadata, diffs: Vec<FileDiff>, threads: Vec<CommentThread>) -> Self {
         use std::collections::HashMap;
         let session = Session {
             pr_number: meta.pr_number,
@@ -2243,7 +2255,11 @@ mod tests {
             "collapsing the folder should hide its children: {visible_before} -> {visible_after}"
         );
         apply_key(&mut s, KeyCode::Char(' '));
-        assert_eq!(s.visible_rows.len(), visible_before, "second toggle re-expands");
+        assert_eq!(
+            s.visible_rows.len(),
+            visible_before,
+            "second toggle re-expands"
+        );
     }
 
     #[test]
@@ -2294,7 +2310,10 @@ mod tests {
             apply_key(&mut s, KeyCode::Char('j'));
             steps += 1;
         }
-        assert!(s.cursor_on_thread(), "expected to find a thread row by scrolling");
+        assert!(
+            s.cursor_on_thread(),
+            "expected to find a thread row by scrolling"
+        );
         let i = s.selected_file_idx().unwrap();
         let rows_before = s.laid[i].rows.len();
         apply_key(&mut s, KeyCode::Enter);
@@ -2317,10 +2336,7 @@ mod tests {
         for y in 0..buffer.area.height {
             let mut line = String::new();
             for x in 0..buffer.area.width {
-                line.push_str(
-                    buffer[(x, y)]
-                        .symbol(),
-                );
+                line.push_str(buffer[(x, y)].symbol());
             }
             lines.push(line.trim_end().to_owned());
         }
@@ -2356,10 +2372,7 @@ mod tests {
         let mut s = state(&["a.rs"], vec![]);
         let lines = render_to_lines(&mut s, 60, 12);
         let joined = lines.join("\n");
-        assert!(
-            !joined.contains("\u{1F4AC}"),
-            "no threads → no badge"
-        );
+        assert!(!joined.contains("\u{1F4AC}"), "no threads → no badge");
     }
 
     #[test]
@@ -2388,11 +2401,13 @@ mod tests {
     fn capital_d_toggles_description_panel() {
         let mut s = state(&["a.rs"], vec![]);
         s.meta.body = "Hello body line one.\nLine two.".into();
-        s.meta.conversation.push(crate::github::ConversationComment {
-            author: "alice".into(),
-            body: "lgtm".into(),
-            created_at: "2026-04-26 10:00".into(),
-        });
+        s.meta
+            .conversation
+            .push(crate::github::ConversationComment {
+                author: "alice".into(),
+                body: "lgtm".into(),
+                created_at: "2026-04-26 10:00".into(),
+            });
         assert!(!s.show_description);
         apply_key(&mut s, KeyCode::Char('D'));
         assert!(s.show_description);
@@ -2433,7 +2448,11 @@ mod tests {
     #[test]
     fn slash_starts_file_filter_and_typing_narrows_visible_rows() {
         let mut s = state(&["src/foo.rs", "src/bar.rs", "tests/baz.rs"], vec![]);
-        let before = s.visible_rows.iter().filter(|r| matches!(r.item, VisibleItem::File { .. })).count();
+        let before = s
+            .visible_rows
+            .iter()
+            .filter(|r| matches!(r.item, VisibleItem::File { .. }))
+            .count();
         assert_eq!(before, 3);
 
         apply_key(&mut s, KeyCode::Char('/'));
@@ -2443,13 +2462,21 @@ mod tests {
         apply_key(&mut s, KeyCode::Char('z'));
         assert_eq!(s.file_filter_query(), "baz");
 
-        let after = s.visible_rows.iter().filter(|r| matches!(r.item, VisibleItem::File { .. })).count();
+        let after = s
+            .visible_rows
+            .iter()
+            .filter(|r| matches!(r.item, VisibleItem::File { .. }))
+            .count();
         assert_eq!(after, 1, "only baz.rs should remain visible");
 
         apply_key(&mut s, KeyCode::Esc);
         assert!(!s.file_filter_editing());
         assert_eq!(s.file_filter_query(), "");
-        let restored = s.visible_rows.iter().filter(|r| matches!(r.item, VisibleItem::File { .. })).count();
+        let restored = s
+            .visible_rows
+            .iter()
+            .filter(|r| matches!(r.item, VisibleItem::File { .. }))
+            .count();
         assert_eq!(restored, 3, "Esc restores all rows");
     }
 
@@ -2532,7 +2559,10 @@ mod tests {
         assert!(joined.contains("FILES"), "files panel title");
         assert!(joined.contains("BASE"), "base pane title");
         assert!(joined.contains("HEAD"), "head pane title");
-        assert!(joined.contains("src/"), "file tree should show the folder row");
+        assert!(
+            joined.contains("src/"),
+            "file tree should show the folder row"
+        );
     }
 
     #[test]
@@ -2588,14 +2618,15 @@ mod tests {
 
     #[test]
     fn n_jumps_to_next_thread_across_files() {
-        let mut s = state(
-            &["a.rs", "b.rs"],
-            vec![thread("T1", "b.rs", 1, "hi")],
-        );
+        let mut s = state(&["a.rs", "b.rs"], vec![thread("T1", "b.rs", 1, "hi")]);
         // Cursor starts on file a.rs which has no threads.
         assert_eq!(s.selected_file_idx(), Some(0));
         apply_key(&mut s, KeyCode::Char('n'));
-        assert_eq!(s.selected_file_idx(), Some(1), "n should jump to the file with the thread");
+        assert_eq!(
+            s.selected_file_idx(),
+            Some(1),
+            "n should jump to the file with the thread"
+        );
         assert!(s.cursor_on_thread(), "cursor should land on the thread row");
     }
 

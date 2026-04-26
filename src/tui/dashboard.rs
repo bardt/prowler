@@ -161,14 +161,21 @@ impl DashboardState {
             }
         };
 
-        push_section(&mut rows, "Awaiting your review", &self.data.review_requested);
+        push_section(
+            &mut rows,
+            "Awaiting your review",
+            &self.data.review_requested,
+        );
         rows.push(Row::Empty(String::new()));
         push_section(&mut rows, "Opened by you", &self.data.authored);
         rows.push(Row::Empty(String::new()));
         push_section(&mut rows, "Assigned to you", &self.data.assigned);
         rows.push(Row::Empty(String::new()));
 
-        rows.push(Row::Header(format!("Local sessions ({})", self.sessions.len())));
+        rows.push(Row::Header(format!(
+            "Local sessions ({})",
+            self.sessions.len()
+        )));
         if self.sessions.is_empty() {
             rows.push(Row::Empty("    (none)".into()));
         } else {
@@ -278,7 +285,9 @@ fn load_local_sessions(repo_root: &Path) -> anyhow::Result<Vec<Session>> {
         let entry = entry?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        let Ok(pr_number) = name.parse::<u64>() else { continue };
+        let Ok(pr_number) = name.parse::<u64>() else {
+            continue;
+        };
         if let Some(s) = Session::load(repo_root, pr_number)? {
             out.push(s);
         }
@@ -318,19 +327,14 @@ fn render_header(frame: &mut Frame, state: &DashboardState, area: Rect) {
             Style::default().add_modifier(Modifier::BOLD),
         ),
         Span::raw("   "),
-        Span::styled(
-            "Dashboard",
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled("Dashboard", Style::default().fg(Color::DarkGray)),
     ]);
     let p = Paragraph::new(vec![title, Line::from("")]);
     frame.render_widget(p, area);
 }
 
 fn render_list(frame: &mut Frame, state: &mut DashboardState, area: Rect) {
-    let inner = Block::default()
-        .borders(Borders::ALL)
-        .title(" PRs ");
+    let inner = Block::default().borders(Borders::ALL).title(" PRs ");
     let inner_area = inner.inner(area);
     frame.render_widget(inner, area);
 
@@ -380,10 +384,7 @@ fn row_to_item(row: &Row, width: usize) -> ListItem<'static> {
 
 fn format_pr_row(pr: &DashboardPr, width: usize) -> Line<'static> {
     let badge = if pr.is_draft {
-        Span::styled(
-            " DRAFT ",
-            Style::default().fg(Color::Black).bg(Color::Gray),
-        )
+        Span::styled(" DRAFT ", Style::default().fg(Color::Black).bg(Color::Gray))
     } else {
         match pr.review_decision.as_str() {
             "APPROVED" => Span::styled(
@@ -430,7 +431,11 @@ fn format_pr_row(pr: &DashboardPr, width: usize) -> Line<'static> {
     // Title is truncated to fit; the badge / numbers / metadata take ~50 cols on a
     // typical row.
     let prefix_cols: usize = 1 + 7 + 1 + 7 + 1; // marker + badge + space + #NNNN + space
-    let suffix_cols: usize = author.content.len() + updated.content.len() + lines.content.len() + comments.content.len() + 4;
+    let suffix_cols: usize = author.content.len()
+        + updated.content.len()
+        + lines.content.len()
+        + comments.content.len()
+        + 4;
     let avail = width.saturating_sub(prefix_cols + suffix_cols);
     let title = truncate_to(&pr.title, avail.max(10));
 
@@ -465,7 +470,10 @@ fn format_session_row(
 
     Line::from(vec![
         Span::raw(" "),
-        Span::styled("  SESSION", Style::default().fg(Color::Black).bg(Color::Yellow)),
+        Span::styled(
+            "  SESSION",
+            Style::default().fg(Color::Black).bg(Color::Yellow),
+        ),
         Span::styled(prefix, Style::default().fg(Color::Cyan)),
         Span::styled(path_show, Style::default().fg(Color::DarkGray)),
         Span::raw("  "),
@@ -495,15 +503,18 @@ fn render_footer(frame: &mut Frame, state: &mut DashboardState, area: Rect) {
                 StatusKind::Error => (Color::Black, Color::Red),
                 StatusKind::Info => (Color::Black, Color::Cyan),
             };
-            let line = Line::from(vec![
-                Span::styled(format!(" {} ", s.text), Style::default().fg(fg).bg(bg)),
-            ]);
+            let line = Line::from(vec![Span::styled(
+                format!(" {} ", s.text),
+                Style::default().fg(fg).bg(bg),
+            )]);
             frame.render_widget(Paragraph::new(line), area);
             return;
         }
     }
     let cur_is_session = matches!(
-        state.rows.get(state.list_state.selected().unwrap_or(usize::MAX)),
+        state
+            .rows
+            .get(state.list_state.selected().unwrap_or(usize::MAX)),
         Some(Row::Session { .. })
     );
     let mut spans: Vec<Span> = Vec::new();
@@ -546,7 +557,11 @@ mod tests {
         }
     }
 
-    fn make_state(req: Vec<DashboardPr>, auth: Vec<DashboardPr>, asgn: Vec<DashboardPr>) -> DashboardState {
+    fn make_state(
+        req: Vec<DashboardPr>,
+        auth: Vec<DashboardPr>,
+        asgn: Vec<DashboardPr>,
+    ) -> DashboardState {
         let data = DashboardData {
             review_requested: req,
             authored: auth,

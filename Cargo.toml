@@ -9,6 +9,16 @@ readme = "README.md"
 repository = "https://github.com/bardt/prowler"
 keywords = ["github", "pr", "review", "tui", "git"]
 categories = ["command-line-utilities", "development-tools"]
+# Internal-only docs that crates.io users don't need (project notes, design
+# log, internal roadmap). README.md, LICENSE, and docs/config-sample.toml
+# still ship.
+exclude = [
+    "CLAUDE.md",
+    "design.md",
+    "docs/decisions.md",
+    "docs/ux-roadmap.md",
+    ".claude/",
+]
 
 [dependencies]
 anyhow     = "1"

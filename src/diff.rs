@@ -215,7 +215,12 @@ pub fn enrich_with_orphan_context(
     }
 }
 
-fn collect_hunk_lines(hunks: &[Hunk]) -> (std::collections::HashSet<u32>, std::collections::HashSet<u32>) {
+fn collect_hunk_lines(
+    hunks: &[Hunk],
+) -> (
+    std::collections::HashSet<u32>,
+    std::collections::HashSet<u32>,
+) {
     use std::collections::HashSet;
     let mut base = HashSet::new();
     let mut head = HashSet::new();
@@ -295,7 +300,9 @@ fn synthesise_orphan_hunk(
         ))],
     };
 
-    let Some(text) = text else { return Some(placeholder()) };
+    let Some(text) = text else {
+        return Some(placeholder());
+    };
     let lines: Vec<&str> = text.split('\n').collect();
     if anchor_line == 0 || (anchor_line as usize) > lines.len() {
         return Some(placeholder());
