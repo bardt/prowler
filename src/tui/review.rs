@@ -197,10 +197,13 @@ impl ReviewState {
             &mut diffs,
             &threads_by_file,
         );
-        let expanded_threads: HashSet<String> = HashSet::new();
+        let expanded_threads: HashSet<String> = session.expanded_threads.iter().cloned().collect();
         let laid = build_layout(&diffs, &threads_by_file, DEFAULT_WRAP_WIDTH, &expanded_threads, session.hide_resolved);
         let scroll = vec![0; diffs.len()];
-        let cursor = vec![0; diffs.len()];
+        let cursor: Vec<u16> = diffs
+            .iter()
+            .map(|d| session.cursors.get(&d.path).copied().unwrap_or(0))
+            .collect();
         let file_tree = FileTree::build(&diffs);
         let visible_rows = file_tree.visible_rows();
         let mut list_state = ListState::default();
@@ -638,6 +641,21 @@ impl ReviewState {
             self.expanded_threads.insert(thread_id);
         }
         self.relayout();
+        self.persist_ui_state();
+    }
+
+    /// Snapshot expanded threads + per-file cursors into Session and save.
+    /// Called after UI-state changes (toggle thread, move cursor) — TOML
+    /// write is fast enough not to need debouncing for v1.
+    fn persist_ui_state(&mut self) {
+        self.session.expanded_threads = self.expanded_threads.iter().cloned().collect();
+        self.session.cursors = self
+            .diffs
+            .iter()
+            .zip(self.cursor.iter())
+            .map(|(d, c)| (d.path.clone(), *c))
+            .collect();
+        let _ = self.session.save(&self.repo_root);
     }
 
     pub fn set_status(&mut self, text: impl Into<String>, kind: StatusKind) {
@@ -1242,6 +1260,10 @@ impl ReviewState {
         let next = (cur + delta).clamp(0, last.max(0)) as u16;
         self.set_cursor(i, next);
         self.ensure_cursor_visible(i);
+        // Only persist mode-1 cursor — mode-2 cursor is per-session-only.
+        if matches!(self.diff_mode, DiffMode::BaseHead) {
+            self.persist_ui_state();
+        }
     }
 
     fn ensure_cursor_visible(&mut self, i: usize) {
@@ -2080,6 +2102,8 @@ impl ReviewState {
             head_sha: meta.head_sha.clone(),
             files: HashMap::new(),
             hide_resolved: false,
+            expanded_threads: Vec::new(),
+            cursors: HashMap::new(),
         };
         let (status_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         Self::new(

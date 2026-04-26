@@ -418,6 +418,10 @@ pub fn render_pane(
             "(select a file to view its diff)",
             Style::default().fg(Color::DarkGray),
         )],
+        Some((_, laid)) if laid.rows.is_empty() => vec![Line::styled(
+            "(no changes — try `e` to edit, `L` to switch back)",
+            Style::default().fg(Color::DarkGray),
+        )],
         Some((file, laid)) => {
             let syn = syntax::highlighter();
             let syntax_ref = syn.syntax_for(&file.path);

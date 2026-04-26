@@ -90,6 +90,10 @@ fn dashboard_loop(
         match outcome {
             dashboard::DashboardOutcome::Quit => return Ok(()),
             dashboard::DashboardOutcome::Refresh => {
+                state.set_info("Refreshing dashboard…");
+                terminal
+                    .draw(|frame| dashboard::render(frame, state))
+                    .ok();
                 let res = tokio::task::block_in_place(|| {
                     Handle::current().block_on(crate::github::fetch_dashboard(token, owner, repo))
                 });
@@ -102,6 +106,10 @@ fn dashboard_loop(
                 }
             }
             dashboard::DashboardOutcome::Open(pr) | dashboard::DashboardOutcome::OpenLocal(pr) => {
+                state.set_info(format!("Loading PR #{pr}…"));
+                terminal
+                    .draw(|frame| dashboard::render(frame, state))
+                    .ok();
                 let res = open_pr_review(terminal, token, owner, repo, repo_root, pr);
                 if let Err(e) = res {
                     state.set_error(format!("Open #{pr} failed: {e:#}"));
@@ -163,6 +171,14 @@ fn open_pr_review(
         .as_ref()
         .map(|s| s.hide_resolved)
         .unwrap_or(crate::config::get().review.hide_resolved_default);
+    let expanded_threads = session
+        .as_ref()
+        .map(|s| s.expanded_threads.clone())
+        .unwrap_or_default();
+    let cursors = session
+        .as_ref()
+        .map(|s| s.cursors.clone())
+        .unwrap_or_default();
     let mut files = session.map(|s| s.files).unwrap_or_default();
     for pr_file in &meta.files {
         let github_state = pr_file.viewer_viewed_state.as_str();
@@ -187,6 +203,8 @@ fn open_pr_review(
         head_sha: meta.head_sha.clone(),
         files,
         hide_resolved,
+        expanded_threads,
+        cursors,
     };
     session.save(repo_root)?;
 
@@ -289,8 +307,8 @@ fn event_loop(
         // everything else is handled by the pure `review::apply_key`.
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::F(5) => refresh_from_github(&mut state)?,
-            KeyCode::Char('r') if ctrl => refresh_from_github(&mut state)?,
+            KeyCode::F(5) => refresh_from_github(terminal, &mut state)?,
+            KeyCode::Char('r') if ctrl => refresh_from_github(terminal, &mut state)?,
             KeyCode::Char('e') => open_in_editor(terminal, &mut state, Side::Head)?,
             KeyCode::Char('E') => open_in_editor(terminal, &mut state, Side::Base)?,
             KeyCode::Char('c') => post_comment(terminal, &mut state)?,
@@ -313,8 +331,14 @@ fn event_loop(
 /// merge them in. If head_sha or base_sha moved, refuse to silently swap the
 /// worktree (would either drop local edits or render an inconsistent diff) —
 /// instead nudge the user to quit and reopen.
-fn refresh_from_github(state: &mut review::ReviewState) -> Result<()> {
-    state.set_status("Refreshing…", review::StatusKind::Success);
+fn refresh_from_github(
+    terminal: &mut ratatui::DefaultTerminal,
+    state: &mut review::ReviewState,
+) -> Result<()> {
+    state.set_status("Refreshing…", review::StatusKind::Info);
+    terminal
+        .draw(|frame| review::render(frame, state))
+        .ok();
     let token = state.token.clone();
     let owner = state.owner.clone();
     let repo = state.repo.clone();

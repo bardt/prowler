@@ -15,6 +15,7 @@ use crate::session::Session;
 pub enum StatusKind {
     Success,
     Error,
+    Info,
 }
 
 struct Status {
@@ -117,6 +118,10 @@ impl DashboardState {
 
     pub fn set_success(&mut self, text: impl Into<String>) {
         self.set_status(text, StatusKind::Success);
+    }
+
+    pub fn set_info(&mut self, text: impl Into<String>) {
+        self.set_status(text, StatusKind::Info);
     }
 
     fn clamp_selection(&mut self) {
@@ -488,6 +493,7 @@ fn render_footer(frame: &mut Frame, state: &mut DashboardState, area: Rect) {
             let (fg, bg) = match s.kind {
                 StatusKind::Success => (Color::Black, Color::Green),
                 StatusKind::Error => (Color::Black, Color::Red),
+                StatusKind::Info => (Color::Black, Color::Cyan),
             };
             let line = Line::from(vec![
                 Span::styled(format!(" {} ", s.text), Style::default().fg(fg).bg(bg)),

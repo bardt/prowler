@@ -167,7 +167,8 @@ position in each.
 
 ## Current milestone
 
-**M18 — 1.0 polish**
+**v1.0 release candidate.** All v1 milestones (M1–M18) shipped. Pending
+items moved to v2 / backlog.
 
 ## Milestones overview
 
@@ -192,7 +193,7 @@ position in each.
 | M15 | LOCAL/HEAD pane alignment | ✅ (via BaseHead/HeadLocal modes) |
 | M16 | Hide-resolved toggle + file-panel fuzzy filter | ✅ |
 | M17 | Configuration file (`~/.config/prowler/config.toml`) | ✅ |
-| M18 | 1.0 polish: empty states, loading hints, persisted UI prefs | 🔲 next |
+| M18 | 1.0 polish: empty states, loading hints, persisted UI prefs | ✅ |
 
 ### v2 (post-1.0, opt-in / experimental)
 

@@ -33,6 +33,15 @@ pub struct Session {
     /// sessions so the choice sticks.
     #[serde(default)]
     pub hide_resolved: bool,
+    /// Comment thread node IDs that are currently expanded. Anything not in
+    /// here renders collapsed. Persisted so re-opening the PR keeps your
+    /// in-progress reading position on long threads.
+    #[serde(default)]
+    pub expanded_threads: Vec<String>,
+    /// Last cursor row per file, keyed by file path. Persisted so re-opening a
+    /// PR returns the cursor to where you left off.
+    #[serde(default)]
+    pub cursors: HashMap<String, u16>,
 }
 
 impl Session {

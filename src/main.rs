@@ -115,6 +115,14 @@ async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
         .as_ref()
         .map(|s| s.hide_resolved)
         .unwrap_or(config::get().review.hide_resolved_default);
+    let expanded_threads = session
+        .as_ref()
+        .map(|s| s.expanded_threads.clone())
+        .unwrap_or_default();
+    let cursors = session
+        .as_ref()
+        .map(|s| s.cursors.clone())
+        .unwrap_or_default();
     let mut files = session.map(|s| s.files).unwrap_or_default();
     // Merge GitHub's per-viewer state with the local session map.
     //
@@ -146,6 +154,8 @@ async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
         head_sha: meta.head_sha.clone(),
         files,
         hide_resolved,
+        expanded_threads,
+        cursors,
     };
     session.save(&repo_root)?;
 
