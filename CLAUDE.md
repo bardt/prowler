@@ -126,7 +126,8 @@ position in each.
 ### Review view
 | Key | Action |
 |-----|--------|
-| `j`/`k` | Scroll diff |
+| `j`/`k` | Scroll diff vertically |
+| `←`/`→` | Scroll diff horizontally (5 cols) |
 | `]`/`[` | Next/prev hunk |
 | `Tab` / `Shift+Tab` | Cycle panel focus |
 | `1`/`2`/`3`/`4` | Jump to panel |

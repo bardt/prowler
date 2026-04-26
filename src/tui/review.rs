@@ -93,6 +93,11 @@ pub struct ReviewState {
     /// Channel for messages from background tasks (currently the viewed-state
     /// sync). The event loop drains this and turns each into a status row.
     status_tx: UnboundedSender<StatusMessage>,
+    /// Horizontal scroll offset per file, mode 1. Used so long code lines can
+    /// be reached without wrapping the diff content.
+    hscroll: Vec<u16>,
+    /// Mode-2 horizontal scroll offset per file.
+    local_hscroll: Vec<u16>,
     /// `true` for files whose `diffs[i].hunks` has been populated by
     /// `compute_diff_for`. False entries render as the empty-diff
     /// placeholder until visited; visiting computes the diff lazily.
@@ -257,6 +262,8 @@ impl ReviewState {
             last_layout_width: DEFAULT_WRAP_WIDTH,
             expanded_threads,
             status_tx,
+            hscroll: vec![0; n],
+            local_hscroll: vec![0; n],
             diffs_computed: vec![false; n],
             diff_mode: DiffMode::BaseHead,
             local_diffs: (0..n).map(|_| None).collect(),
@@ -530,6 +537,33 @@ impl ReviewState {
             DiffMode::BaseHead => self.cursor[i] = value,
             DiffMode::HeadLocal => self.local_cursor[i] = value,
         }
+    }
+
+    fn hscroll_at(&self, i: usize) -> u16 {
+        match self.diff_mode {
+            DiffMode::BaseHead => self.hscroll[i],
+            DiffMode::HeadLocal => self.local_hscroll[i],
+        }
+    }
+
+    fn set_hscroll(&mut self, i: usize, value: u16) {
+        match self.diff_mode {
+            DiffMode::BaseHead => self.hscroll[i] = value,
+            DiffMode::HeadLocal => self.local_hscroll[i] = value,
+        }
+    }
+
+    /// Horizontal scroll step. Five columns balances precision and speed.
+    pub fn scroll_left(&mut self) {
+        let Some(i) = self.selected_idx() else { return };
+        let cur = self.hscroll_at(i);
+        self.set_hscroll(i, cur.saturating_sub(5));
+    }
+
+    pub fn scroll_right(&mut self) {
+        let Some(i) = self.selected_idx() else { return };
+        let cur = self.hscroll_at(i);
+        self.set_hscroll(i, cur.saturating_add(5));
     }
 
     fn scroll_at(&self, i: usize) -> u16 {
@@ -1616,6 +1650,8 @@ pub fn apply_key(state: &mut ReviewState, key: KeyCode) -> bool {
         }
         KeyCode::Char('j') | KeyCode::Down => state.move_down(),
         KeyCode::Char('k') | KeyCode::Up => state.move_up(),
+        KeyCode::Left => state.scroll_left(),
+        KeyCode::Right => state.scroll_right(),
         KeyCode::Char(']') => state.next_hunk(),
         KeyCode::Char('[') => state.prev_hunk(),
         KeyCode::Char('v') => state.toggle_viewed(),
@@ -1668,6 +1704,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
             "Navigation",
             &[
                 ("j / k", "scroll down / up"),
+                ("← / →", "scroll diff horizontally (5 cols)"),
                 ("] / [", "next / previous hunk"),
                 ("n / N", "next / previous comment thread (any file)"),
                 ("Tab / Shift+Tab", "cycle panel focus"),
@@ -1911,15 +1948,19 @@ fn pr_state_badge(state: &str, is_draft: bool) -> (&'static str, Color) {
 }
 
 fn render_body(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
-    let constraints: Vec<Constraint> = vec![
-        Constraint::Length(36),
-        Constraint::Percentage(50),
-        Constraint::Min(20),
-    ];
-    let cols = Layout::default()
+    // Files panel keeps its fixed 36-col width; the remainder is split evenly
+    // between LEFT and RIGHT diff panes so neither gets squeezed in narrow
+    // terminals. Long lines are reachable via horizontal scroll (Left/Right
+    // arrows) — the panes don't wrap diff content.
+    let outer = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints(constraints)
+        .constraints(vec![Constraint::Length(36), Constraint::Min(0)])
         .split(area);
+    let panes = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(vec![Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+        .split(outer[1]);
+    let cols: Vec<Rect> = vec![outer[0], panes[0], panes[1]];
 
     state.last_pane_height = cols[1].height;
     state.relayout_for_width(cols[1].width);
@@ -1960,6 +2001,8 @@ fn render_body(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
 
     let (left_title, right_title) = pane_titles(state, i);
 
+    let hscroll = i.map(|i| state.hscroll_at(i)).unwrap_or(0);
+
     render_pane(
         frame,
         cols[1],
@@ -1968,6 +2011,7 @@ fn render_body(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
         pair,
         Side::Base,
         scroll,
+        hscroll,
         cursor,
         base_sel,
     );
@@ -1979,6 +2023,7 @@ fn render_body(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
         pair,
         Side::Head,
         scroll,
+        hscroll,
         cursor,
         head_sel,
     );

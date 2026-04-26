@@ -435,6 +435,7 @@ pub fn render_pane(
     diff: Option<(&FileDiff, &LaidOutDiff)>,
     side: Side,
     scroll: u16,
+    hscroll: u16,
     cursor: Option<usize>,
     selection: Option<(usize, usize)>,
 ) {
@@ -482,7 +483,7 @@ pub fn render_pane(
         }
     };
 
-    let para = Paragraph::new(lines).block(block).scroll((scroll, 0));
+    let para = Paragraph::new(lines).block(block).scroll((scroll, hscroll));
     frame.render_widget(para, area);
 }
 
