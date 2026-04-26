@@ -142,6 +142,14 @@ impl ReviewState {
                 threads_by_file[idx].push(thread);
             }
         }
+        let mut diffs = diffs;
+        crate::diff::enrich_with_orphan_context(
+            &repo_root,
+            &meta.base_sha,
+            &meta.head_sha,
+            &mut diffs,
+            &threads_by_file,
+        );
         let expanded_threads: HashSet<String> = HashSet::new();
         let laid = build_layout(&diffs, &threads_by_file, DEFAULT_WRAP_WIDTH, &expanded_threads);
         let scroll = vec![0; diffs.len()];
@@ -419,6 +427,13 @@ impl ReviewState {
             }
         }
         self.threads_by_file = threads_by_file;
+        crate::diff::enrich_with_orphan_context(
+            &self.repo_root,
+            &self.meta.base_sha,
+            &self.meta.head_sha,
+            &mut self.diffs,
+            &self.threads_by_file,
+        );
         self.relayout();
     }
 
@@ -1557,6 +1572,7 @@ mod tests {
             previous_path: None,
             hunks: vec![Hunk {
                 header: "@@ -1,3 +1,3 @@".to_owned(),
+                is_synthetic: false,
                 lines: vec![
                     DiffLine::Context("ctx 1\n".into()),
                     DiffLine::Removed("old\n".into()),

@@ -18,7 +18,7 @@ const BG_SUGGESTION: Color = Color::Rgb(160, 220, 160);
 #[derive(Clone)]
 pub enum Cell {
     Empty,
-    HunkHeader(String),
+    HunkHeader { text: String, is_synthetic: bool },
     Context(String),
     Added(String),
     Removed(String),
@@ -83,8 +83,14 @@ impl LaidOutDiff {
         for hunk in &file.hunks {
             hunk_starts.push(rows.len());
             rows.push(Row {
-                base: Cell::HunkHeader(hunk.header.clone()),
-                head: Cell::HunkHeader(hunk.header.clone()),
+                base: Cell::HunkHeader {
+                    text: hunk.header.clone(),
+                    is_synthetic: hunk.is_synthetic,
+                },
+                head: Cell::HunkHeader {
+                    text: hunk.header.clone(),
+                    is_synthetic: hunk.is_synthetic,
+                },
                 base_line: None,
                 head_line: None,
                 thread_id: None,
@@ -452,15 +458,16 @@ fn render_cell<'a>(cell: &'a Cell, syntax: &syntect::parsing::SyntaxReference) -
     let syn = syntax::highlighter();
     match cell {
         Cell::Empty => Line::raw(""),
-        Cell::HunkHeader(h) => Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                strip_newline(h).to_owned(),
-                Style::default()
-                    .fg(Color::Magenta)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
+        Cell::HunkHeader { text: h, is_synthetic } => {
+            let color = if *is_synthetic { Color::DarkGray } else { Color::Magenta };
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled(
+                    strip_newline(h).to_owned(),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+            ])
+        }
         Cell::Context(t) => {
             let segs = syn.highlight_line(syntax, strip_newline(t));
             let mut spans = vec![Span::styled("  ", Style::default())];
