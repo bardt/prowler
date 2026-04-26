@@ -237,6 +237,46 @@ impl ReviewState {
         }
     }
 
+    /// Recompute the BASE/HEAD diff and the LOCAL diff for the file under the
+    /// cursor. Called after the editor handoff so worktree edits are reflected
+    /// without restarting prowler.
+    pub fn local_panel_visible(&self) -> bool {
+        self.local_panel
+    }
+
+    pub fn refresh_after_edit(&mut self, side: Side) {
+        let Some(i) = self.selected_idx() else { return };
+
+        // Skip BASE/HEAD recomputation for BASE-side edits in v1 — we'd need a
+        // separate compute pass against the BASE worktree. Local-pane refresh
+        // only applies to HEAD edits anyway (LOCAL = worktree vs head_sha).
+        if matches!(side, Side::Head) {
+            let pr_file = crate::github::PrFile {
+                path: self.diffs[i].path.clone(),
+                previous_path: self.diffs[i].previous_path.clone(),
+                status: "modified".into(),
+                viewer_viewed_state: String::new(),
+            };
+            match crate::diff::compute_diffs(
+                &self.repo_root,
+                &self.session.worktree_path,
+                &self.meta.base_sha,
+                std::slice::from_ref(&pr_file),
+            ) {
+                Ok(mut v) => {
+                    if let Some(d) = v.pop() {
+                        self.diffs[i] = d;
+                    }
+                }
+                Err(e) => {
+                    self.set_status(format!("Diff refresh failed: {e}"), StatusKind::Error);
+                }
+            }
+            self.compute_local_for(i);
+            self.relayout();
+        }
+    }
+
     fn compute_local_for(&mut self, file_idx: usize) {
         // Constructs a single PrFile so we can reuse `diff::compute_diffs` to
         // produce a HEAD → worktree diff. status="modified" works for the

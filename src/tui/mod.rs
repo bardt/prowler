@@ -436,8 +436,21 @@ fn open_in_editor(
     let result = editor::open(&target.file, target.line);
     *terminal = ratatui::init();
     terminal.clear().ok();
-    if let Err(e) = result {
-        state.set_status(format!("Editor failed: {e}"), review::StatusKind::Error);
+    match result {
+        Err(e) => {
+            state.set_status(format!("Editor failed: {e}"), review::StatusKind::Error);
+        }
+        Ok(()) => {
+            state.refresh_after_edit(side);
+            if matches!(side, Side::Head) {
+                let hint = if state.local_panel_visible() {
+                    "Diff refreshed"
+                } else {
+                    "Diff refreshed — press L to see your local edits"
+                };
+                state.set_status(hint, review::StatusKind::Success);
+            }
+        }
     }
     Ok(())
 }
