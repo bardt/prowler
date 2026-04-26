@@ -142,9 +142,11 @@ Toggle local panel with `L`.
 
 ## Current milestone
 
-**M14 — Impact-based file sorting**
+**M14 — Local hunk → suggestion comment**
 
 ## Milestones overview
+
+### v1 (target: 1.0 release)
 
 | # | Name | Status |
 |---|------|--------|
@@ -156,12 +158,29 @@ Toggle local panel with `L`.
 | M6 | Editor handoff | ✅ |
 | M7 | Viewed state + session persistence | ✅ |
 | M8 | Inline comments (read) | ✅ |
-| M9 | Inline comments (post) | ✅ |
+| M9 | Inline comments (post, single-line) | ✅ |
 | M10 | Submit review | ✅ |
 | M11 | Local diff panel | ✅ |
 | M12 | Dashboard | ✅ |
-| M13 | Missing review actions (partial — see scope) | ✅ |
-| M14 | Impact-based file sorting | 🔲 next |
+| M13 | Missing review actions | ✅ |
+| M14 | Local hunk → suggestion comment | 🔲 next |
+| M15 | LOCAL/HEAD pane alignment | 🔲 |
+| M16 | Hide-resolved toggle + file-panel fuzzy filter | 🔲 |
+| M17 | Configuration file (`~/.config/prowler/config.toml`) | 🔲 |
+| M18 | 1.0 polish: empty states, loading hints, persisted UI prefs | 🔲 |
+
+### v2 (post-1.0, opt-in / experimental)
+
+| # | Name | Status |
+|---|------|--------|
+| V2.1 | Impact-based file sorting (was M14) | 🔲 |
+| V2.2 | AI-assisted review (summarise PR, draft comments) | 🔲 |
+| V2.3 | Stacked-PR support | 🔲 |
+| V2.4 | Inter-diff mode (changes since last review) | 🔲 |
+| V2.5 | CI status integration (`statusCheckRollup`) | 🔲 |
+| V2.6 | Non-GitHub remotes (GitLab, Gitea) | 🔲 |
+| V2.7 | Reactions | 🔲 |
+| V2.8 | Themes | 🔲 |
 
 **M10 scope:** A panel listing all comments in the current pending review, with a verdict
 selector (Approve / Comment / Request changes) and an optional summary body. Submits via
@@ -203,56 +222,104 @@ before this milestone.
   local-hunk-to-suggestion feature, since both want a similar selection
   primitive.
 
-**M14 scope:** Optional file-panel ordering by dependency-graph "impact" — core
-modules imported by many others sort first, leaf files last. Per design.md:
-"core modules imported by many others go first, lockfiles last."
+**M14 scope:** Local hunk → ` ```suggestion ` comment. The flagship "edit
+and suggest" loop:
 
-- Compute an import graph from the set of changed files plus their direct
-  importers in the worktree. Per-language parser: Rust `use` statements, JS/TS
-  `import` / `require`, Python `import`. Start with one language and let the
-  rest fall back to alphabetical.
-- For each file, count how many other files import it (in-degree). That's
-  the impact score. Higher = more central.
-- Sort the flat file list (or the leaf level of the tree) by impact
-  descending; lockfiles, generated paths, and unknown languages tie-break to
-  the bottom alphabetically.
-- Make it a toggle (e.g. `o` cycles ordering: tree → flat-impact → flat-alpha)
-  rather than a hard-coded mode, since for small PRs the tree is still
-  faster to scan.
+- User opens a file with `e`, edits it, saves. The LOCAL pane shows their
+  edits.
+- In the LOCAL pane, the user selects rows with `V` (already shipped).
+- `c` posts the selection as a ` ```suggestion ` block on the
+  corresponding HEAD line(s), via `addPullRequestReviewThread`.
 
-**Tradeoff:** computing imports requires parsing every file in the repo (or
-at least every reverse-dependency); on big monorepos this is non-trivial.
-Cache the graph on disk under `.review/impact-graph.json` keyed by HEAD SHA
-to avoid re-parsing on every prowler open.
+Depends on **M15** for clean line-anchor mapping. Without M15 we have to
+parse hunk headers + walk rows; with M15 the cursor row already knows
+its HEAD line.
+
+**M15 scope:** Align LOCAL pane rows with HEAD pane.
+
+Today the LOCAL pane is rendered as a unified diff (single column,
+`+`/`-` markers). HEAD is rendered as side-by-side rows where row Y
+corresponds to a specific line on either side. The two are unrelated —
+line 42 in HEAD may sit at row 12 while the LOCAL diff for line 42 sits
+at some unrelated row.
+
+Approach: lay out LOCAL using the HEAD pane's row geometry. For each
+HEAD row with `head_line == N`, look up local-diff content anchored at
+line N and render it on the same row (or blank). Locally-deleted lines
+become extra rows on both sides.
+
+Side benefit: M14's suggestion-comment anchor becomes "the cursor row's
+HEAD line" — no offset math.
+
+**M16 scope:** Two daily-use UX additions.
+
+- **Hide-resolved threads (`H`).** Toggleable filter that drops
+  `is_resolved == true` threads from the layout. State stored in
+  `Session` so it persists across opens. Default: hidden (matches
+  GitHub's web UI).
+- **Fuzzy file filter (`/`).** Live filter on the file panel. Type to
+  narrow; Esc / Enter clears. Useful in PRs with > 30 files. Reuse the
+  selected-row mechanic; the tree collapses to leaves matching the
+  query.
+
+**M17 scope:** Configuration file at `~/.config/prowler/config.toml`.
+
+Replaces hard-coded values:
+
+- `editor` — overrides `$EDITOR` (default `nvim`).
+- `dashboard.scope` — `"current_repo"` (default) or `"all"` for
+  cross-repo dashboard.
+- `review.hide_resolved_default` — bool, default true.
+- `review.local_panel_default` — bool, default false.
+- `review.poll_interval_secs` — bg poll cadence (default 60).
+- `review.confirm_delete_ttl_secs` — `X X` arming window (default 3).
+
+Loaded on startup. Future entries (theme, key remap) layer onto the
+same struct.
+
+**M18 scope:** Final 1.0 polish pass.
+
+- Empty-state hints on dashboard / file panel / LOCAL pane.
+- Loading status during dashboard refresh and PR open (today they
+  freeze the UI for ~1 s).
+- Persist expanded-thread state in `Session`.
+- Persist last-cursor-position-per-file in `Session` so reopening a PR
+  drops you where you were.
+- Post-`q` cleanup: release stale worktrees from PRs that were merged /
+  closed.
+- Cargo release setup: `cargo install --git`, README, basic install
+  instructions, demo gif.
+
+### v2 details
+
+**V2.1 — Impact-based file sorting** (was M14). Optional file-panel
+ordering by dependency-graph "impact" — core modules imported by many
+others sort first, leaf files last. Per design.md: "core modules
+imported by many others go first, lockfiles last."
+
+- Compute an import graph from changed files plus their direct
+  importers in the worktree. Per-language parser: Rust `use`, JS/TS
+  `import` / `require`, Python `import`. Start with Rust; alphabetical
+  fallback for others.
+- For each file, count in-degree (how many others import it). Higher =
+  more central.
+- Sort flat file list (or tree leaves) by impact desc; lockfiles,
+  generated paths, unknown languages tie-break to the bottom.
+- Toggle via `o`: tree → flat-impact → flat-alpha. Tree stays the
+  default since it's fastest to scan on small PRs.
+
+Trade-off: parsing imports for every file is non-trivial on
+monorepos. Cache on disk under `.review/impact-graph.json` keyed by
+HEAD SHA.
+
+Moved to v2 because it's speculative (depends on PR shape) and the
+parser surface area dwarfs the rest of v1 combined.
 
 Update the **Current milestone** section and the status column above at the start of each
 new milestone.
 
 ## Backlog
 
-- **Multi-line review comments.** `c` and the M13 `a` suggestion-apply both
-  assume a single-line anchor. Adding a selection mode (e.g. `V` enters
-  visual-line, `j`/`k` extends, `c` posts) would let the user post threads
-  that anchor to a span. GraphQL field: `addPullRequestReviewThread.input`
-  takes optional `startLine` + `startSide`; the same selection primitive
-  feeds local-hunk-to-suggestion below.
-- **Local hunk → suggestion comment.** With LOCAL aligned to HEAD (next item),
-  pressing `c` while focused on a LOCAL hunk should wrap the new lines in
-  a ` ```suggestion ` fence and post via `addPullRequestReviewThread`. The
-  HEAD line at the cursor row becomes the anchor line; if the hunk spans
-  multiple HEAD lines, we use `startLine`/`line` from the multi-line work
-  above.
-- **Align LOCAL pane rows with HEAD pane.** Today the LOCAL pane is rendered as a
-  unified diff (single column with `+`/`-` markers, walking the local hunks in
-  order). HEAD is rendered as side-by-side rows where row Y corresponds to a
-  specific line number on either side. The two are unrelated — line 42 in HEAD
-  may sit at row 12, while the LOCAL diff for line 42 sits at some unrelated
-  row. To align: lay out LOCAL using the HEAD pane's row geometry — for each
-  HEAD row with `head_line == N`, look up local-diff content anchored at line
-  N and render it in the same row (or blank). Lines that don't appear in HEAD
-  (e.g. locally-deleted) get inserted as extra rows on both sides. This
-  enables the "convert hunk to suggestion" feature in M13 to map cleanly: the
-  cursor row's HEAD line is the anchor for the suggestion comment.
 - **Mockable GitHub client for end-to-end tests.** The headless harness
   (state + render + event layers) is in place — `apply_key` is pure,
   `ReviewState::for_test` builds a state from fixtures, and `TestBackend`
