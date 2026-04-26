@@ -120,7 +120,9 @@ Toggle local panel with `L`.
 | `a` | Apply ` ```suggestion ` block at cursor to worktree file |
 | `n`/`N` | Next/prev comment thread (cross-file) |
 | `Enter` | Expand/collapse comment thread (or fold folder in Files panel) |
-| `?` | Toggle PR description / conversation panel |
+| `?` | Toggle keymap help overlay |
+| `D` | Toggle PR description / conversation panel |
+| `Esc` | Close help / description overlay |
 | `L` | Toggle local diff panel |
 | `R` | Refresh local diff |
 | `F5` / `Ctrl+R` | Re-fetch PR from GitHub (comments, viewed states) |

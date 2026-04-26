@@ -86,9 +86,12 @@ pub struct ReviewState {
     /// Viewport scroll offset for the LOCAL pane, per file.
     local_scroll: Vec<u16>,
     /// When true, the body area is replaced by a full-width description page
-    /// (PR body + top-level conversation). Toggled with `?`.
+    /// (PR body + top-level conversation). Toggled with `D`.
     show_description: bool,
     description_scroll: u16,
+    /// When true, the body area is replaced by a categorized keymap. Toggled
+    /// with `?`. Wins over `show_description` when both are set.
+    show_help: bool,
     /// Two-step delete confirmation: first `X` press records the comment id and
     /// timestamp; a second `X` press on the same comment within `STATUS_TTL`
     /// triggers the actual delete.
@@ -188,11 +191,16 @@ impl ReviewState {
             local_scroll: vec![0; n],
             show_description: false,
             description_scroll: 0,
+            show_help: false,
             pending_delete: None,
         }
     }
 
     /// Toggle the full-width PR description / conversation page.
+    pub fn toggle_help(&mut self) {
+        self.show_help = !self.show_help;
+    }
+
     pub fn toggle_description(&mut self) {
         self.show_description = !self.show_description;
         self.description_scroll = 0;
@@ -1025,7 +1033,12 @@ pub fn apply_key(state: &mut ReviewState, key: KeyCode) -> bool {
         }
         KeyCode::Char('L') => state.toggle_local_panel(),
         KeyCode::Char('R') => state.refresh_local(),
-        KeyCode::Char('?') => state.toggle_description(),
+        KeyCode::Char('?') => state.toggle_help(),
+        KeyCode::Char('D') => state.toggle_description(),
+        KeyCode::Esc => {
+            state.show_help = false;
+            state.show_description = false;
+        }
         KeyCode::Char('j') | KeyCode::Down => state.move_down(),
         KeyCode::Char('k') | KeyCode::Up => state.move_up(),
         KeyCode::Char(']') => state.next_hunk(),
@@ -1058,12 +1071,105 @@ pub fn render(frame: &mut Frame, state: &mut ReviewState) {
         .split(frame.area());
 
     render_header(frame, outer[0], state);
-    if state.show_description {
+    if state.show_help {
+        render_help(frame, outer[1]);
+    } else if state.show_description {
         render_description(frame, outer[1], state);
     } else {
         render_body(frame, outer[1], state);
     }
     render_footer(frame, outer[2], state);
+}
+
+fn render_help(frame: &mut Frame, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Keymap — press ? or Esc to close ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let sections: &[(&str, &[(&str, &str)])] = &[
+        (
+            "Navigation",
+            &[
+                ("j / k", "scroll down / up"),
+                ("] / [", "next / previous hunk"),
+                ("n / N", "next / previous comment thread (any file)"),
+                ("Tab / Shift+Tab", "cycle panel focus"),
+                ("1 / 2 / 3 / 4", "focus Files / Base / Head / Local"),
+                ("g / G", "first / last (in dashboard)"),
+            ],
+        ),
+        (
+            "Files panel",
+            &[
+                ("Enter / Space", "fold / unfold folder"),
+                ("v", "mark file viewed"),
+                ("s", "mark file skipped"),
+            ],
+        ),
+        (
+            "Diff panes (Base / Head)",
+            &[
+                ("e / E", "open HEAD / BASE in $EDITOR at cursor line"),
+                ("c", "post a new inline comment"),
+                ("Enter", "expand / collapse comment thread"),
+            ],
+        ),
+        (
+            "On a comment thread",
+            &[
+                ("r", "reply to thread"),
+                ("o", "resolve / unresolve thread"),
+                ("M", "edit your own comment (in $EDITOR)"),
+                ("X X", "delete your own comment (press twice within 3s)"),
+                ("a", "apply ```suggestion``` block to worktree file"),
+            ],
+        ),
+        (
+            "Local diff",
+            &[
+                ("L", "toggle Local pane"),
+                ("R", "refresh Local diff for current file"),
+            ],
+        ),
+        (
+            "Review-wide",
+            &[
+                ("F5 / Ctrl+R", "re-fetch PR from GitHub (comments, viewed states)"),
+                ("S", "submit review (verdict + summary)"),
+                ("?", "toggle this help"),
+                ("D", "toggle description / conversation panel"),
+                ("Esc", "close help / description"),
+                ("q", "back to dashboard"),
+            ],
+        ),
+    ];
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (title, entries) in sections {
+        lines.push(Line::styled(
+            (*title).to_owned(),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ));
+        for (key, desc) in *entries {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    format!("{key:<18}"),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::raw((*desc).to_owned()),
+            ]));
+        }
+        lines.push(Line::raw(""));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_description(frame: &mut Frame, area: Rect, state: &ReviewState) {
@@ -1792,9 +1898,8 @@ mod tests {
     }
 
     #[test]
-    fn question_mark_toggles_description_panel() {
+    fn capital_d_toggles_description_panel() {
         let mut s = state(&["a.rs"], vec![]);
-        // Stuff a body and a conversation comment so the page has content.
         s.meta.body = "Hello body line one.\nLine two.".into();
         s.meta.conversation.push(crate::github::ConversationComment {
             author: "alice".into(),
@@ -1802,7 +1907,7 @@ mod tests {
             created_at: "2026-04-26 10:00".into(),
         });
         assert!(!s.show_description);
-        apply_key(&mut s, KeyCode::Char('?'));
+        apply_key(&mut s, KeyCode::Char('D'));
         assert!(s.show_description);
 
         let lines = render_to_lines(&mut s, 100, 20);
@@ -1812,8 +1917,23 @@ mod tests {
         assert!(joined.contains("Conversation"));
         assert!(joined.contains("@alice"));
 
-        apply_key(&mut s, KeyCode::Char('?'));
+        apply_key(&mut s, KeyCode::Char('D'));
         assert!(!s.show_description);
+    }
+
+    #[test]
+    fn question_mark_toggles_help_overlay() {
+        let mut s = state(&["a.rs"], vec![]);
+        assert!(!s.show_help);
+        apply_key(&mut s, KeyCode::Char('?'));
+        assert!(s.show_help);
+        let lines = render_to_lines(&mut s, 100, 30);
+        let joined = lines.join("\n");
+        assert!(joined.contains("Keymap"));
+        assert!(joined.contains("Navigation"));
+        assert!(joined.contains("apply"));
+        apply_key(&mut s, KeyCode::Esc);
+        assert!(!s.show_help);
     }
 
     #[test]
