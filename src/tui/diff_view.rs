@@ -10,9 +10,9 @@ use crate::diff::{DiffLine, FileDiff};
 use crate::github::{CommentSide, CommentThread};
 use crate::tui::syntax;
 
-// Diff rows tint the whole row in a named ANSI color matching the marker
-// (Green for `+`, Red for `-`, Blue for `~`). Named colors instead of RGB
-// means the actual on-screen shade comes from the user's terminal theme.
+// Diff rows distinguish themselves via a bold colored marker (`+` / `-` /
+// `~` in green/red/blue), not a row-wide bg. ANSI bg colors are saturated in
+// most terminal themes and were too loud on long diffs.
 
 #[derive(Clone)]
 pub enum Cell {
@@ -619,17 +619,19 @@ fn render_cell<'a>(cell: &'a Cell, syntax: &syntect::parsing::SyntaxReference) -
 fn row_with_marker<'a>(
     marker: &'static str,
     text: &'a str,
-    bg: Color,
+    marker_fg: Color,
     syntax: &syntect::parsing::SyntaxReference,
 ) -> Line<'a> {
     let syn = syntax::highlighter();
     let segs = syn.highlight_line(syntax, strip_newline(text));
     let mut spans = vec![Span::styled(
         marker,
-        Style::default().bg(bg).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(marker_fg)
+            .add_modifier(Modifier::BOLD),
     )];
-    spans.extend(syntax::to_spans(&segs, Some(bg)));
-    Line::from(spans).style(Style::default().bg(bg))
+    spans.extend(syntax::to_spans(&segs, None));
+    Line::from(spans)
 }
 
 fn strip_newline(s: &str) -> &str {
