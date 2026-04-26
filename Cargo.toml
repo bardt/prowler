@@ -2,6 +2,7 @@
 name = "prowler"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 description = "Terminal UI for deep GitHub PR review — edit-and-suggest from your shell."
 license = "MIT"
 readme = "README.md"
