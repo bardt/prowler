@@ -1694,10 +1694,23 @@ fn render_body(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
     let base_sel = sel.and_then(|(lo, hi, side)| (side == CommentSide::Base).then_some((lo, hi)));
     let head_sel = sel.and_then(|(lo, hi, side)| (side == CommentSide::Head).then_some((lo, hi)));
 
+    let (base_title, head_title) = match i {
+        Some(i) => {
+            let d = &state.diffs[i];
+            let new_path = d.path.as_str();
+            let old_path = d.previous_path.as_deref().unwrap_or(new_path);
+            (
+                format!("BASE [2] {old_path}"),
+                format!("HEAD [3] {new_path}"),
+            )
+        }
+        None => ("BASE [2]".to_owned(), "HEAD [3]".to_owned()),
+    };
+
     render_pane(
         frame,
         cols[1],
-        "BASE [2]",
+        &base_title,
         state.focus == Focus::Base,
         pair,
         Side::Base,
@@ -1708,7 +1721,7 @@ fn render_body(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
     render_pane(
         frame,
         cols[2],
-        "HEAD [3]",
+        &head_title,
         state.focus == Focus::Head,
         pair,
         Side::Head,
@@ -1805,6 +1818,25 @@ fn render_local_pane(
     frame.render_widget(para, area);
 }
 
+/// Build a compact label for a renamed-from path: shows the differing prefix
+/// plus the basename, abbreviating the shared directory portion. e.g.
+/// `previous_path_label("design.md", "docs/design.md")` → `design.md`,
+/// `previous_path_label("src/old/foo.rs", "src/new/foo.rs")` → `…/old/foo.rs`.
+fn previous_path_label(prev: &str, current: &str) -> String {
+    let prev_parts: Vec<&str> = prev.split('/').collect();
+    let cur_parts: Vec<&str> = current.split('/').collect();
+    let common = prev_parts
+        .iter()
+        .zip(cur_parts.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    if common == 0 || common >= prev_parts.len() {
+        return prev.to_owned();
+    }
+    let tail = prev_parts[common..].join("/");
+    format!("…/{tail}")
+}
+
 fn render_files(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
     let items: Vec<ListItem> = state
         .visible_rows
@@ -1849,11 +1881,24 @@ fn render_files(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
                     Span::styled(marker, marker_style),
                     Span::raw(" "),
                     Span::styled(name.clone(), name_style),
+                ];
+                // Rename indicator: shows the original path tail so the user
+                // can tell where the file moved from at a glance.
+                if let Some(prev) = &d.previous_path {
+                    let prev_label = previous_path_label(prev, &d.path);
+                    spans.push(Span::styled(
+                        format!(" \u{2190} {prev_label}"),
+                        Style::default()
+                            .fg(Color::Magenta)
+                            .add_modifier(Modifier::ITALIC),
+                    ));
+                }
+                spans.extend([
                     Span::raw("  "),
                     Span::styled(format!("+{}", d.added), Style::default().fg(Color::Green)),
                     Span::raw(" "),
                     Span::styled(format!("-{}", d.removed), Style::default().fg(Color::Red)),
-                ];
+                ]);
                 // Unresolved comment-thread count (resolved threads silently
                 // counted out so the badge tracks attention demand).
                 let unresolved = state
@@ -2212,23 +2257,22 @@ mod tests {
         let t = thread("T1", "a.rs", 1, "needs work");
         let mut s = state(&["a.rs", "b.rs"], vec![t]);
         let lines = render_to_lines(&mut s, 60, 12);
-        // Find the row that contains a.rs's filename. Wide emoji + `1` may
-        // render with a filler cell between, so just assert both are present.
+        // Find the file-panel row carrying the speech-bubble badge. The HEAD
+        // pane title now also contains "a.rs", so we anchor on the badge.
         let a_row = lines
             .iter()
-            .find(|l| l.contains("a.rs"))
-            .expect("a.rs row not found");
+            .find(|l| l.contains("\u{1F4AC}"))
+            .expect("speech-bubble row not found");
         assert!(
-            a_row.contains("\u{1F4AC}") && a_row.contains('1'),
-            "a.rs row should include the speech-bubble badge and `1`: {a_row:?}"
+            a_row.contains('1'),
+            "speech-bubble row should include the count `1`: {a_row:?}"
         );
-        let b_row = lines
-            .iter()
-            .find(|l| l.contains("b.rs"))
-            .expect("b.rs row not found");
-        assert!(
-            !b_row.contains("\u{1F4AC}"),
-            "b.rs has no threads — no badge expected: {b_row:?}"
+        // b.rs has no threads → there should be exactly one badge in the
+        // whole rendered frame.
+        assert_eq!(
+            lines.iter().filter(|l| l.contains("\u{1F4AC}")).count(),
+            1,
+            "only a.rs should carry a badge"
         );
     }
 
@@ -2287,6 +2331,22 @@ mod tests {
 
         apply_key(&mut s, KeyCode::Char('D'));
         assert!(!s.show_description);
+    }
+
+    #[test]
+    fn previous_path_label_abbreviates_shared_prefix() {
+        assert_eq!(
+            super::previous_path_label("design.md", "docs/design.md"),
+            "design.md"
+        );
+        assert_eq!(
+            super::previous_path_label("src/old/foo.rs", "src/new/foo.rs"),
+            "…/old/foo.rs"
+        );
+        assert_eq!(
+            super::previous_path_label("totally/unrelated.txt", "elsewhere.txt"),
+            "totally/unrelated.txt"
+        );
     }
 
     #[test]
