@@ -96,6 +96,18 @@ pub struct ReviewState {
     /// timestamp; a second `X` press on the same comment within `STATUS_TTL`
     /// triggers the actual delete.
     pending_delete: Option<(String, Instant)>,
+    /// Active multi-line selection started with `V`. Anchor is the row index
+    /// in `laid[file_idx]` where the selection began; `side` is the diff side
+    /// the selection lives on (fixed at start). The selection extends from
+    /// the anchor to the current cursor row inclusive.
+    selection: Option<Selection>,
+}
+
+#[derive(Clone, Copy)]
+pub struct Selection {
+    pub file_idx: usize,
+    pub anchor: u16,
+    pub side: CommentSide,
 }
 
 /// Default wrap width used before we've measured the actual pane (e.g. on first paint).
@@ -193,12 +205,90 @@ impl ReviewState {
             description_scroll: 0,
             show_help: false,
             pending_delete: None,
+            selection: None,
         }
     }
 
     /// Toggle the full-width PR description / conversation page.
     pub fn toggle_help(&mut self) {
         self.show_help = !self.show_help;
+    }
+
+    /// Begin a multi-line selection at the cursor row. No-op when the cursor
+    /// isn't on a code line (a row with at least one side line number).
+    pub fn start_selection(&mut self) {
+        let Some(i) = self.selected_idx() else { return };
+        let cur = self.cursor[i] as usize;
+        let Some(row) = self.laid[i].rows.get(cur) else { return };
+        // Pick the side that has a line number under the cursor.
+        // Prefer HEAD because that's where most comments naturally land.
+        let side = if row.head_line.is_some() {
+            CommentSide::Head
+        } else if row.base_line.is_some() {
+            CommentSide::Base
+        } else {
+            self.set_status(
+                "Selection mode needs a code line under the cursor",
+                StatusKind::Error,
+            );
+            return;
+        };
+        self.selection = Some(Selection {
+            file_idx: i,
+            anchor: self.cursor[i],
+            side,
+        });
+        self.set_status(
+            "Selection mode — j/k to extend, c to comment, Esc to cancel",
+            StatusKind::Success,
+        );
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
+    }
+
+    pub fn selection_active(&self) -> bool {
+        self.selection.is_some()
+    }
+
+    /// Return the inclusive (lo, hi) row range for the active selection, plus
+    /// the side, only for the file under the cursor. None when inactive or
+    /// the cursor moved to a different file.
+    pub fn selection_range(&self) -> Option<(usize, usize, CommentSide)> {
+        let sel = self.selection?;
+        let i = self.selected_idx()?;
+        if sel.file_idx != i {
+            return None;
+        }
+        let cur = self.cursor[i];
+        let lo = sel.anchor.min(cur) as usize;
+        let hi = sel.anchor.max(cur) as usize;
+        Some((lo, hi, sel.side))
+    }
+
+    /// Resolve a multi-line selection into the GraphQL anchor:
+    /// `(path, side, start_line, end_line)`. Walks the rows in range, picking
+    /// up only those with a line number on the selected side. Returns None
+    /// when no usable anchor exists.
+    pub fn multi_line_comment_target(
+        &self,
+    ) -> Option<(String, CommentSide, u32, u32)> {
+        let (lo, hi, side) = self.selection_range()?;
+        let i = self.selected_idx()?;
+        let mut start: Option<u32> = None;
+        let mut end: Option<u32> = None;
+        for row in &self.laid[i].rows[lo..=hi] {
+            let line = match side {
+                CommentSide::Head => row.head_line,
+                CommentSide::Base => row.base_line,
+            };
+            if let Some(l) = line {
+                start.get_or_insert(l);
+                end = Some(l);
+            }
+        }
+        Some((self.diffs[i].path.clone(), side, start?, end?))
     }
 
     pub fn toggle_description(&mut self) {
@@ -1035,9 +1125,11 @@ pub fn apply_key(state: &mut ReviewState, key: KeyCode) -> bool {
         KeyCode::Char('R') => state.refresh_local(),
         KeyCode::Char('?') => state.toggle_help(),
         KeyCode::Char('D') => state.toggle_description(),
+        KeyCode::Char('V') => state.start_selection(),
         KeyCode::Esc => {
             state.show_help = false;
             state.show_description = false;
+            state.clear_selection();
         }
         KeyCode::Char('j') | KeyCode::Down => state.move_down(),
         KeyCode::Char('k') | KeyCode::Up => state.move_up(),
@@ -1350,6 +1442,10 @@ fn render_body(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
     let scroll = i.map(|i| state.scroll[i]).unwrap_or(0);
     let cursor = i.map(|i| state.cursor[i] as usize);
 
+    let sel = state.selection_range();
+    let base_sel = sel.and_then(|(lo, hi, side)| (side == CommentSide::Base).then_some((lo, hi)));
+    let head_sel = sel.and_then(|(lo, hi, side)| (side == CommentSide::Head).then_some((lo, hi)));
+
     render_pane(
         frame,
         cols[1],
@@ -1359,6 +1455,7 @@ fn render_body(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
         Side::Base,
         scroll,
         cursor,
+        base_sel,
     );
     render_pane(
         frame,
@@ -1369,6 +1466,7 @@ fn render_body(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
         Side::Head,
         scroll,
         cursor,
+        head_sel,
     );
 
     if state.local_panel {
@@ -1919,6 +2017,41 @@ mod tests {
 
         apply_key(&mut s, KeyCode::Char('D'));
         assert!(!s.show_description);
+    }
+
+    #[test]
+    fn capital_v_starts_selection_when_on_code_line() {
+        let mut s = state(&["a.rs"], vec![]);
+        // Move down to the first content row (skipping the hunk header).
+        s.set_focus(Focus::Head);
+        apply_key(&mut s, KeyCode::Char('j'));
+        // We may not be on a code line right at index 1, but apply 'j' until we are.
+        let mut steps = 0;
+        while !s.cursor_on_code_line() && steps < 30 {
+            apply_key(&mut s, KeyCode::Char('j'));
+            steps += 1;
+        }
+        assert!(s.cursor_on_code_line(), "cursor must land on a code line");
+        apply_key(&mut s, KeyCode::Char('V'));
+        assert!(s.selection_active(), "V should arm selection");
+        // Range covers a single row at start.
+        let (lo, hi, _side) = s.selection_range().unwrap();
+        assert_eq!(lo, hi);
+    }
+
+    #[test]
+    fn esc_clears_selection() {
+        let mut s = state(&["a.rs"], vec![]);
+        s.set_focus(Focus::Head);
+        let mut steps = 0;
+        while !s.cursor_on_code_line() && steps < 30 {
+            apply_key(&mut s, KeyCode::Char('j'));
+            steps += 1;
+        }
+        apply_key(&mut s, KeyCode::Char('V'));
+        assert!(s.selection_active());
+        apply_key(&mut s, KeyCode::Esc);
+        assert!(!s.selection_active());
     }
 
     #[test]

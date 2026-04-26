@@ -398,6 +398,7 @@ pub fn render_pane(
     side: Side,
     scroll: u16,
     cursor: Option<usize>,
+    selection: Option<(usize, usize)>,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -421,7 +422,19 @@ pub fn render_pane(
                         Side::Head => &row.head,
                     };
                     let active = Some(idx) == cursor;
-                    with_gutter(render_cell(cell, syntax_ref), active)
+                    let in_selection = selection
+                        .map(|(lo, hi)| idx >= lo && idx <= hi)
+                        .unwrap_or(false);
+                    let line = with_gutter(render_cell(cell, syntax_ref), active);
+                    if in_selection {
+                        let mut spans = line.spans;
+                        for span in &mut spans {
+                            span.style = span.style.bg(Color::Rgb(60, 50, 30));
+                        }
+                        Line::from(spans)
+                    } else {
+                        line
+                    }
                 })
                 .collect()
         }

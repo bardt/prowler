@@ -284,14 +284,16 @@ pub async fn fetch_pr(
     Ok((metadata, threads))
 }
 
-/// Post a new review thread anchored to a single line on a PR diff.
-/// Uses the `addPullRequestReviewThread` GraphQL mutation with `subjectType: LINE`.
+/// Post a new review thread anchored to a single line, or a multi-line span
+/// when `start_line` is provided. Uses the `addPullRequestReviewThread`
+/// GraphQL mutation with `subjectType: LINE`.
 pub async fn post_thread(
     token: &str,
     pr_node_id: &str,
     path: &str,
     side: CommentSide,
     line: u32,
+    start_line: Option<u32>,
     body: &str,
 ) -> Result<()> {
     let octocrab = Octocrab::builder()
@@ -304,7 +306,41 @@ pub async fn post_thread(
         CommentSide::Head => "RIGHT",
     };
 
-    let query = r#"
+    // GitHub rejects start_line == line on multi-line input, so only include
+    // the start fields when the span actually spans more than one line.
+    let multi = matches!(start_line, Some(s) if s != line);
+
+    let (query, vars) = if multi {
+        (
+            r#"
+mutation($pid: ID!, $path: String!, $line: Int!, $startLine: Int!, $side: DiffSide!, $startSide: DiffSide!, $body: String!) {
+  addPullRequestReviewThread(input: {
+    pullRequestId: $pid,
+    path: $path,
+    line: $line,
+    startLine: $startLine,
+    side: $side,
+    startSide: $startSide,
+    body: $body,
+    subjectType: LINE
+  }) {
+    thread { id }
+  }
+}
+"#,
+            serde_json::json!({
+                "pid": pr_node_id,
+                "path": path,
+                "line": line,
+                "startLine": start_line.unwrap(),
+                "side": side_str,
+                "startSide": side_str,
+                "body": body,
+            }),
+        )
+    } else {
+        (
+            r#"
 mutation($pid: ID!, $path: String!, $line: Int!, $side: DiffSide!, $body: String!) {
   addPullRequestReviewThread(input: {
     pullRequestId: $pid,
@@ -317,19 +353,18 @@ mutation($pid: ID!, $path: String!, $line: Int!, $side: DiffSide!, $body: String
     thread { id }
   }
 }
-"#;
+"#,
+            serde_json::json!({
+                "pid": pr_node_id,
+                "path": path,
+                "line": line,
+                "side": side_str,
+                "body": body,
+            }),
+        )
+    };
 
-    let payload = serde_json::json!({
-        "query": query,
-        "variables": {
-            "pid": pr_node_id,
-            "path": path,
-            "line": line,
-            "side": side_str,
-            "body": body,
-        }
-    });
-
+    let payload = serde_json::json!({ "query": query, "variables": vars });
     let response: serde_json::Value = octocrab
         .graphql(&payload)
         .await

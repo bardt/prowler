@@ -502,15 +502,35 @@ fn post_comment(
     terminal: &mut ratatui::DefaultTerminal,
     state: &mut review::ReviewState,
 ) -> Result<()> {
-    let Some((path, side, line)) = state.comment_target() else {
-        return Ok(());
+    // If a multi-line selection is active, post a multi-line thread; else
+    // single-line at the cursor.
+    let (path, side, start_line, end_line) = if state.selection_active() {
+        match state.multi_line_comment_target() {
+            Some(t) => (t.0, t.1, Some(t.2), t.3),
+            None => {
+                state.set_status(
+                    "Selection has no usable lines on the chosen side",
+                    review::StatusKind::Error,
+                );
+                return Ok(());
+            }
+        }
+    } else {
+        let Some((path, side, line)) = state.comment_target() else {
+            return Ok(());
+        };
+        (path, side, None, line)
     };
     let side_label = match side {
         crate::github::CommentSide::Base => "BASE",
         crate::github::CommentSide::Head => "HEAD",
     };
+    let line_label = match start_line {
+        Some(s) if s != end_line => format!("lines {s}-{end_line}"),
+        _ => format!("line {end_line}"),
+    };
     let prompt = format!(
-        "# Posting comment on `{path}` line {line} ({side_label}).\n\
+        "# Posting comment on `{path}` {line_label} ({side_label}).\n\
          # Lines starting with `#` are ignored. Save and exit to post; abort the editor to cancel.\n"
     );
 
@@ -534,23 +554,32 @@ fn post_comment(
 
     let result = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(async {
-            crate::github::post_thread(&token, &pr_node_id, &path_for_post, side, line, &body)
-                .await?;
+            crate::github::post_thread(
+                &token,
+                &pr_node_id,
+                &path_for_post,
+                side,
+                end_line,
+                start_line,
+                &body,
+            )
+            .await?;
             crate::github::fetch_pr(&token, &owner, &repo, pr_number).await
         })
     });
 
     match result {
         Ok((meta, threads)) => {
+            state.clear_selection();
             state.apply_refresh(meta, threads);
             state.set_status(
-                format!("Comment posted on {path}:{line}"),
+                format!("Comment posted on {path}:{end_line}"),
                 review::StatusKind::Success,
             );
         }
         Err(e) => {
             log_post_error(&format!(
-                "[FAIL] PR #{pr_number} {path}:{line} {side_label}: {e:#}\n"
+                "[FAIL] PR #{pr_number} {path}:{end_line} {side_label}: {e:#}\n"
             ));
             state.set_status(format!("Post failed: {e}"), review::StatusKind::Error);
         }

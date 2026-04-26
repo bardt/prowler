@@ -112,7 +112,8 @@ Toggle local panel with `L`.
 | `E` | Open BASE in $EDITOR at current line |
 | `v` | Mark file viewed |
 | `s` | Skip file |
-| `c` | Post inline comment |
+| `c` | Post inline comment (single line, or multi-line if `V`-selection active) |
+| `V` | Start multi-line selection at cursor (j/k extends; Esc cancels) |
 | `r` | Reply to thread under cursor |
 | `o` | Resolve / unresolve thread under cursor |
 | `M` | Edit your own comment under cursor |
