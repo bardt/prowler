@@ -159,7 +159,10 @@ fn open_pr_review(
         }
     }
 
-    let hide_resolved = session.as_ref().map(|s| s.hide_resolved).unwrap_or(false);
+    let hide_resolved = session
+        .as_ref()
+        .map(|s| s.hide_resolved)
+        .unwrap_or(crate::config::get().review.hide_resolved_default);
     let mut files = session.map(|s| s.files).unwrap_or_default();
     for pr_file in &meta.files {
         let github_state = pr_file.viewer_viewed_state.as_str();
@@ -904,7 +907,9 @@ fn parse_submit_buffer(text: &str) -> Result<(String, String)> {
     Ok((verdict, body))
 }
 
-const BACKGROUND_POLL_INTERVAL_SECS: u64 = 60;
+fn background_poll_interval_secs() -> u64 {
+    crate::config::get().review.poll_interval_secs.max(1)
+}
 
 /// RAII wrapper that aborts a Tokio task when it goes out of scope. Used to
 /// ensure the background comment poller doesn't outlive the review session
@@ -929,7 +934,7 @@ fn spawn_poller(
         let mut last_threads = initial_threads;
         let mut last_comments = initial_comments;
         loop {
-            tokio::time::sleep(Duration::from_secs(BACKGROUND_POLL_INTERVAL_SECS)).await;
+            tokio::time::sleep(Duration::from_secs(background_poll_interval_secs())).await;
             let Ok((_meta, threads)) =
                 crate::github::fetch_pr(&token, &owner, &repo, pr_number).await
             else {

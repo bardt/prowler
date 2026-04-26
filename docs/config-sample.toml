@@ -1,0 +1,33 @@
+# prowler configuration sample
+#
+# Copy to `~/.config/prowler/config.toml` (or
+# `$XDG_CONFIG_HOME/prowler/config.toml`) and edit as needed. Missing fields
+# fall back to defaults; the file itself is optional — prowler runs fine
+# with no config at all.
+
+[editor]
+# Command to run on `e` / `E` and the comment-compose buffers.
+# Empty (default) falls back to `$VISUAL`, then `$EDITOR`, then `vi`.
+# command = "nvim"
+
+[dashboard]
+# "current_repo" (default) scopes the dashboard search to the repo prowler
+# is launched from. "all" fetches PRs across every repo the viewer can see.
+# scope = "all"
+
+[review]
+# Default for `Session.hide_resolved` on a fresh session. Once a session is
+# saved, the local value persists across opens (you can flip it with `H`).
+# hide_resolved_default = true
+
+# Background poller cadence: how often prowler checks GitHub for new
+# threads / comments while you're in a review.
+# poll_interval_secs = 60
+
+# Two-step `X X` arming window in seconds (delete confirmation).
+# confirm_delete_ttl_secs = 3
+
+# When you toggle diff mode with `L`, sync the cursor to the corresponding
+# HEAD line in the target mode. False (default) keeps each mode's cursor
+# independent. (Currently always-off; switch landing in a future release.)
+# cursor_sync_modes = false

@@ -934,8 +934,9 @@ impl ReviewState {
     /// actually run the mutation.
     pub fn arm_or_confirm_delete(&mut self, comment_id: &str) -> bool {
         let now = Instant::now();
+        let ttl = Duration::from_secs(crate::config::get().review.confirm_delete_ttl_secs.max(1));
         if let Some((id, t)) = &self.pending_delete {
-            if id == comment_id && now.duration_since(*t) <= STATUS_TTL {
+            if id == comment_id && now.duration_since(*t) <= ttl {
                 self.pending_delete = None;
                 return true;
             }

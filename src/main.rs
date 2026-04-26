@@ -1,4 +1,5 @@
 mod auth;
+mod config;
 mod diff;
 mod git;
 mod github;
@@ -36,6 +37,7 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    config::init();
     let cli = Cli::parse();
     match cli.command.unwrap_or(Commands::Dashboard) {
         Commands::Review { pr, cleanup, json } => review(pr, cleanup, json).await?,
@@ -109,7 +111,10 @@ async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
         }
     }
 
-    let hide_resolved = session.as_ref().map(|s| s.hide_resolved).unwrap_or(false);
+    let hide_resolved = session
+        .as_ref()
+        .map(|s| s.hide_resolved)
+        .unwrap_or(config::get().review.hide_resolved_default);
     let mut files = session.map(|s| s.files).unwrap_or_default();
     // Merge GitHub's per-viewer state with the local session map.
     //

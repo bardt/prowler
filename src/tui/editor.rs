@@ -2,10 +2,26 @@ use anyhow::{bail, Context, Result};
 use std::path::Path;
 use std::process::Command;
 
-/// Spawn `$EDITOR` (default `vi`) on `file` at `line`, inheriting the terminal.
+fn resolve_editor() -> String {
+    let cfg = crate::config::get().editor.command.trim();
+    if !cfg.is_empty() {
+        return cfg.to_owned();
+    }
+    if let Ok(v) = std::env::var("VISUAL") {
+        if !v.is_empty() {
+            return v;
+        }
+    }
+    std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string())
+}
+
+/// Spawn the user's editor on `file` at `line`, inheriting the terminal.
 /// Uses the POSIX `+N` convention which is honoured by vim/nvim/nano/emacs.
+///
+/// Resolution order: `[editor].command` from the config file, then `$VISUAL`,
+/// then `$EDITOR`, then `vi` as a final fallback.
 pub fn open(file: &Path, line: u32) -> Result<()> {
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+    let editor = resolve_editor();
 
     let status = Command::new(&editor)
         .arg(format!("+{line}"))
@@ -29,7 +45,7 @@ pub fn compose(prompt: &str) -> Result<String> {
     std::fs::write(&path, &initial)
         .with_context(|| format!("failed to seed compose buffer at {}", path.display()))?;
 
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+    let editor = resolve_editor();
     let status = Command::new(&editor)
         .arg(&path)
         .status()

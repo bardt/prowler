@@ -42,6 +42,7 @@ No credentials stored by the tool.
 src/
   main.rs          # entry point, arg parsing (clap)
   auth.rs          # GitHub token resolution
+  config.rs        # ~/.config/prowler/config.toml loader
   github.rs        # octocrab API calls
   git.rs           # git2 + worktree lifecycle
   diff.rs          # diff computation (similar) + data model
@@ -53,6 +54,21 @@ src/
     diff.rs        # diff rendering, syntax highlighting
     comments.rs    # inline comment display + compose
 ```
+
+## Configuration
+
+Optional file at `~/.config/prowler/config.toml` (or
+`$XDG_CONFIG_HOME/prowler/config.toml`). Missing fields use defaults.
+See `docs/config-sample.toml` for the schema.
+
+Fields:
+- `editor.command` — overrides `$VISUAL` / `$EDITOR` for `e` / `E` and
+  comment-compose buffers.
+- `dashboard.scope` — `"current_repo"` (default) or `"all"` for cross-repo.
+- `review.hide_resolved_default` — default for `Session.hide_resolved`.
+- `review.poll_interval_secs` — background poller cadence (default 60).
+- `review.confirm_delete_ttl_secs` — `X X` arming window (default 3).
+- `review.cursor_sync_modes` — placeholder for future cursor-sync toggle.
 
 ## Session state
 
@@ -151,7 +167,7 @@ position in each.
 
 ## Current milestone
 
-**M16 — Hide-resolved + fuzzy filter**
+**M18 — 1.0 polish**
 
 ## Milestones overview
 
@@ -174,9 +190,9 @@ position in each.
 | M13 | Missing review actions | ✅ |
 | M14 | Local hunk → suggestion comment | ✅ |
 | M15 | LOCAL/HEAD pane alignment | ✅ (via BaseHead/HeadLocal modes) |
-| M16 | Hide-resolved toggle + file-panel fuzzy filter | 🔲 |
-| M17 | Configuration file (`~/.config/prowler/config.toml`) | 🔲 |
-| M18 | 1.0 polish: empty states, loading hints, persisted UI prefs | 🔲 |
+| M16 | Hide-resolved toggle + file-panel fuzzy filter | ✅ |
+| M17 | Configuration file (`~/.config/prowler/config.toml`) | ✅ |
+| M18 | 1.0 polish: empty states, loading hints, persisted UI prefs | 🔲 next |
 
 ### v2 (post-1.0, opt-in / experimental)
 

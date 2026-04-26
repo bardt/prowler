@@ -505,10 +505,13 @@ pub async fn fetch_dashboard(token: &str, owner: &str, repo: &str) -> Result<Das
         .build()
         .context("failed to build GitHub client")?;
 
-    let scope = format!("repo:{owner}/{repo}");
-    let req = format!("is:open is:pr review-requested:@me {scope}");
-    let auth = format!("is:open is:pr author:@me {scope}");
-    let asgn = format!("is:open is:pr assignee:@me {scope}");
+    let scope = match crate::config::get().dashboard.scope.as_str() {
+        "all" => String::new(),
+        _ => format!("repo:{owner}/{repo}"),
+    };
+    let req = format!("is:open is:pr review-requested:@me {scope}").trim().to_owned();
+    let auth = format!("is:open is:pr author:@me {scope}").trim().to_owned();
+    let asgn = format!("is:open is:pr assignee:@me {scope}").trim().to_owned();
 
     let payload = serde_json::json!({
         "query": DASHBOARD_QUERY,
