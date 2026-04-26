@@ -6,7 +6,7 @@ mod review;
 mod syntax;
 
 use anyhow::{Context, Result};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -260,7 +260,10 @@ fn event_loop(
 
         // Side-effectful keys that need terminal/runtime access stay here;
         // everything else is handled by the pure `review::apply_key`.
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
+            KeyCode::F(5) => refresh_from_github(&mut state)?,
+            KeyCode::Char('r') if ctrl => refresh_from_github(&mut state)?,
             KeyCode::Char('e') => open_in_editor(terminal, &mut state, Side::Head)?,
             KeyCode::Char('E') => open_in_editor(terminal, &mut state, Side::Base)?,
             KeyCode::Char('c') => post_comment(terminal, &mut state)?,
@@ -277,6 +280,46 @@ fn event_loop(
             }
         }
     }
+}
+
+/// Re-fetch the PR from GitHub. If only comments / viewed states changed,
+/// merge them in. If head_sha or base_sha moved, refuse to silently swap the
+/// worktree (would either drop local edits or render an inconsistent diff) —
+/// instead nudge the user to quit and reopen.
+fn refresh_from_github(state: &mut review::ReviewState) -> Result<()> {
+    state.set_status("Refreshing…", review::StatusKind::Success);
+    let token = state.token.clone();
+    let owner = state.owner.clone();
+    let repo = state.repo.clone();
+    let pr_number = state.pr_number();
+    let old_head = state.head_sha().to_owned();
+    let old_base = state.base_sha().to_owned();
+    let result = tokio::task::block_in_place(|| {
+        Handle::current().block_on(crate::github::fetch_pr(&token, &owner, &repo, pr_number))
+    });
+    match result {
+        Ok((meta, threads)) => {
+            let head_changed = meta.head_sha != old_head;
+            let base_changed = meta.base_sha != old_base;
+            if head_changed || base_changed {
+                let head_short: String = meta.head_sha.chars().take(7).collect();
+                let old_head_short: String = old_head.chars().take(7).collect();
+                state.set_status(
+                    format!(
+                        "PR moved ({old_head_short} → {head_short}). Quit (q) and reopen to fetch new commits."
+                    ),
+                    review::StatusKind::Error,
+                );
+                return Ok(());
+            }
+            state.apply_refresh(meta, threads);
+            state.set_status("Refreshed from GitHub", review::StatusKind::Success);
+        }
+        Err(e) => {
+            state.set_status(format!("Refresh failed: {e}"), review::StatusKind::Error);
+        }
+    }
+    Ok(())
 }
 
 fn toggle_thread_resolved(state: &mut review::ReviewState) -> Result<()> {

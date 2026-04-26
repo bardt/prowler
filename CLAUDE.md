@@ -123,6 +123,7 @@ Toggle local panel with `L`.
 | `?` | Toggle PR description / conversation panel |
 | `L` | Toggle local diff panel |
 | `R` | Refresh local diff |
+| `F5` / `Ctrl+R` | Re-fetch PR from GitHub (comments, viewed states) |
 | `S` | Submit review (verdict + summary) |
 | `q` | Back to dashboard |
 

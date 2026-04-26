@@ -430,6 +430,14 @@ impl ReviewState {
         &self.meta.node_id
     }
 
+    pub fn head_sha(&self) -> &str {
+        &self.meta.head_sha
+    }
+
+    pub fn base_sha(&self) -> &str {
+        &self.meta.base_sha
+    }
+
     pub fn pending_review_id(&self) -> Option<&str> {
         self.meta.pending_review_id.as_deref()
     }
