@@ -76,6 +76,7 @@ impl LaidOutDiff {
         threads: &[CommentThread],
         wrap_width: usize,
         expanded: &HashSet<String>,
+        hide_resolved: bool,
     ) -> Self {
         let mut rows = Vec::new();
         let mut hunk_starts = Vec::new();
@@ -113,7 +114,7 @@ impl LaidOutDiff {
                             thread_id: None,
                             comment_id: None,
                         });
-                        attach_threads(&mut rows, threads, Some(old_line), Some(new_line), wrap_width, expanded);
+                        attach_threads(&mut rows, threads, Some(old_line), Some(new_line), wrap_width, expanded, hide_resolved);
                         old_line += 1;
                         new_line += 1;
                         i += 1;
@@ -127,7 +128,7 @@ impl LaidOutDiff {
                             thread_id: None,
                             comment_id: None,
                         });
-                        attach_threads(&mut rows, threads, Some(old_line), Some(new_line), wrap_width, expanded);
+                        attach_threads(&mut rows, threads, Some(old_line), Some(new_line), wrap_width, expanded, hide_resolved);
                         old_line += 1;
                         new_line += 1;
                         i += 1;
@@ -163,7 +164,7 @@ impl LaidOutDiff {
                                 thread_id: None,
                                 comment_id: None,
                             });
-                            attach_threads(&mut rows, threads, base_line, head_line, wrap_width, expanded);
+                            attach_threads(&mut rows, threads, base_line, head_line, wrap_width, expanded, hide_resolved);
                         }
                     }
                 }
@@ -184,8 +185,12 @@ fn attach_threads(
     head_line: Option<u32>,
     wrap_width: usize,
     expanded: &HashSet<String>,
+    hide_resolved: bool,
 ) {
     for thread in threads {
+        if hide_resolved && thread.is_resolved {
+            continue;
+        }
         let matches = match thread.side {
             CommentSide::Base => base_line == Some(thread.line),
             CommentSide::Head => head_line == Some(thread.line),

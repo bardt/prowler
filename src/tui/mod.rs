@@ -159,6 +159,7 @@ fn open_pr_review(
         }
     }
 
+    let hide_resolved = session.as_ref().map(|s| s.hide_resolved).unwrap_or(false);
     let mut files = session.map(|s| s.files).unwrap_or_default();
     for pr_file in &meta.files {
         let github_state = pr_file.viewer_viewed_state.as_str();
@@ -182,6 +183,7 @@ fn open_pr_review(
         base_sha: meta.base_sha.clone(),
         head_sha: meta.head_sha.clone(),
         files,
+        hide_resolved,
     };
     session.save(repo_root)?;
 

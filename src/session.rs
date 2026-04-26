@@ -28,6 +28,11 @@ pub struct Session {
     pub head_sha: String,
     #[serde(default)]
     pub files: HashMap<String, FileStatus>,
+    /// Hide threads where `is_resolved == true` from the diff layout. Defaults
+    /// to false (show all). Toggled with `H` in the review TUI; persists across
+    /// sessions so the choice sticks.
+    #[serde(default)]
+    pub hide_resolved: bool,
 }
 
 impl Session {

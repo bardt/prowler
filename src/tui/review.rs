@@ -121,6 +121,7 @@ fn build_layout(
     threads_by_file: &[Vec<CommentThread>],
     pane_width: u16,
     expanded: &HashSet<String>,
+    hide_resolved: bool,
 ) -> Vec<LaidOutDiff> {
     let wrap_width = pane_width
         .saturating_sub(PANE_CHROME_COLS)
@@ -128,7 +129,7 @@ fn build_layout(
     diffs
         .iter()
         .zip(threads_by_file)
-        .map(|(d, t)| LaidOutDiff::from_file(d, t, wrap_width, expanded))
+        .map(|(d, t)| LaidOutDiff::from_file(d, t, wrap_width, expanded, hide_resolved))
         .collect()
 }
 
@@ -165,7 +166,7 @@ impl ReviewState {
             &threads_by_file,
         );
         let expanded_threads: HashSet<String> = HashSet::new();
-        let laid = build_layout(&diffs, &threads_by_file, DEFAULT_WRAP_WIDTH, &expanded_threads);
+        let laid = build_layout(&diffs, &threads_by_file, DEFAULT_WRAP_WIDTH, &expanded_threads, session.hide_resolved);
         let scroll = vec![0; diffs.len()];
         let cursor = vec![0; diffs.len()];
         let file_tree = FileTree::build(&diffs);
@@ -311,7 +312,21 @@ impl ReviewState {
             &self.threads_by_file,
             self.last_layout_width,
             &self.expanded_threads,
+            self.session.hide_resolved,
         );
+    }
+
+    /// Toggle hide-resolved and persist to session.
+    pub fn toggle_hide_resolved(&mut self) {
+        self.session.hide_resolved = !self.session.hide_resolved;
+        let _ = self.session.save(&self.repo_root);
+        self.relayout();
+        let msg = if self.session.hide_resolved {
+            "Hiding resolved threads"
+        } else {
+            "Showing resolved threads"
+        };
+        self.set_status(msg, StatusKind::Success);
     }
 
     /// Toggle the LOCAL diff panel. On first show (or after the cursor moves
@@ -1200,6 +1215,7 @@ pub fn apply_key(state: &mut ReviewState, key: KeyCode) -> bool {
         KeyCode::Char('R') => state.refresh_local(),
         KeyCode::Char('?') => state.toggle_help(),
         KeyCode::Char('D') => state.toggle_description(),
+        KeyCode::Char('H') => state.toggle_hide_resolved(),
         KeyCode::Char('V') => state.start_selection(),
         KeyCode::Esc => {
             state.show_help = false;
@@ -1288,6 +1304,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
             &[
                 ("r", "reply to thread"),
                 ("o", "resolve / unresolve thread"),
+                ("H", "toggle hide-resolved (persisted in session)"),
                 ("M", "edit your own comment (in $EDITOR)"),
                 ("X X", "delete your own comment (press twice within 3s)"),
                 ("a", "apply ```suggestion``` block to worktree file"),
@@ -1789,6 +1806,7 @@ impl ReviewState {
             base_sha: meta.base_sha.clone(),
             head_sha: meta.head_sha.clone(),
             files: HashMap::new(),
+            hide_resolved: false,
         };
         let (status_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         Self::new(
@@ -2092,6 +2110,16 @@ mod tests {
 
         apply_key(&mut s, KeyCode::Char('D'));
         assert!(!s.show_description);
+    }
+
+    #[test]
+    fn capital_h_toggles_hide_resolved_and_persists() {
+        let mut s = state(&["a.rs"], vec![]);
+        assert!(!s.session.hide_resolved);
+        apply_key(&mut s, KeyCode::Char('H'));
+        assert!(s.session.hide_resolved);
+        apply_key(&mut s, KeyCode::Char('H'));
+        assert!(!s.session.hide_resolved);
     }
 
     #[test]
