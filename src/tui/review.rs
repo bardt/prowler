@@ -534,6 +534,68 @@ impl ReviewState {
         self.relayout();
     }
 
+    /// Lines of source code at the given anchor, formatted as `NNN: text` and
+    /// suitable for prefixing with `# ` and including in the comment-compose
+    /// prompt so the user sees what they're commenting on while typing.
+    /// Walks the file's hunks (real + synthetic) and picks out lines whose
+    /// (side, line) falls in `[start_line, end_line]`.
+    pub fn code_context_for_anchor(
+        &self,
+        path: &str,
+        side: CommentSide,
+        start_line: u32,
+        end_line: u32,
+    ) -> Vec<String> {
+        use crate::diff::{DiffLine, parse_hunk_header};
+        let Some(file) = self.diffs.iter().find(|d| d.path == path) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for hunk in &file.hunks {
+            let Some((mut old_line, mut new_line)) = parse_hunk_header(&hunk.header) else {
+                continue;
+            };
+            for line in &hunk.lines {
+                let (text, anchor) = match line {
+                    DiffLine::Context(t) | DiffLine::Moved(t) => {
+                        let anchor = match side {
+                            CommentSide::Base => old_line,
+                            CommentSide::Head => new_line,
+                        };
+                        let pair = (t.clone(), Some(anchor));
+                        old_line += 1;
+                        new_line += 1;
+                        pair
+                    }
+                    DiffLine::Removed(t) => {
+                        let pair = if matches!(side, CommentSide::Base) {
+                            (t.clone(), Some(old_line))
+                        } else {
+                            (String::new(), None)
+                        };
+                        old_line += 1;
+                        pair
+                    }
+                    DiffLine::Added(t) => {
+                        let pair = if matches!(side, CommentSide::Head) {
+                            (t.clone(), Some(new_line))
+                        } else {
+                            (String::new(), None)
+                        };
+                        new_line += 1;
+                        pair
+                    }
+                };
+                if let Some(l) = anchor {
+                    if l >= start_line && l <= end_line {
+                        out.push(format!("{l:>4}: {}", text.trim_end_matches('\n')));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Total inline comments across all review threads. Used by the background
     /// poller to detect "new activity" without re-rendering everything.
     pub fn total_inline_comments(&self) -> usize {

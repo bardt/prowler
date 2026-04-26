@@ -245,7 +245,8 @@ fn collect_hunk_lines(hunks: &[Hunk]) -> (std::collections::HashSet<u32>, std::c
     (base, head)
 }
 
-fn parse_hunk_header(header: &str) -> Option<(u32, u32)> {
+/// Parse `@@ -X,Y +A,B @@` → `(X, A)` (the starting old / new line numbers).
+pub fn parse_hunk_header(header: &str) -> Option<(u32, u32)> {
     let rest = header.strip_prefix("@@ -")?;
     let (old_part, after) = rest.split_once(' ')?;
     let new_part = after.strip_prefix('+')?.split(' ').next()?;

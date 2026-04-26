@@ -551,9 +551,20 @@ fn post_comment(
         Some(s) if s != end_line => format!("lines {s}-{end_line}"),
         _ => format!("line {end_line}"),
     };
+    let context_lines =
+        state.code_context_for_anchor(&path, side, start_line.unwrap_or(end_line), end_line);
+    let mut context_block = String::new();
+    if !context_lines.is_empty() {
+        context_block.push_str("#\n");
+        for line in &context_lines {
+            context_block.push_str(&format!("# > {line}\n"));
+        }
+        context_block.push_str("#\n");
+    }
     let prompt = format!(
         "# Posting comment on `{path}` {line_label} ({side_label}).\n\
-         # Lines starting with `#` are ignored. Save and exit to post; abort the editor to cancel.\n"
+         # Lines starting with `#` are ignored. Save and exit to post; abort the editor to cancel.\n\
+         {context_block}"
     );
 
     ratatui::restore();
@@ -616,10 +627,39 @@ fn reply_to_comment(
     let Some(thread_id) = state.reply_target() else {
         return Ok(());
     };
-    let prompt = "# Replying to thread.\n# Lines starting with `#` are ignored. Save and exit to post; abort the editor to cancel.\n";
+
+    // Build a context block showing the anchor code line + the last few
+    // messages in the thread, so the user has the conversation in front of
+    // them while typing the reply.
+    let mut context = String::from(
+        "# Replying to thread.\n\
+         # Lines starting with `#` are ignored. Save and exit to post; abort the editor to cancel.\n",
+    );
+    if let Some(t) = state.current_thread() {
+        context.push_str("#\n");
+        let anchor_lines = state.code_context_for_anchor(&t.path, t.side, t.line, t.line);
+        for line in &anchor_lines {
+            context.push_str(&format!("# > {line}\n"));
+        }
+        context.push_str("#\n");
+        // Show up to the last 3 messages (root + replies) so the reply has context.
+        let n = t.comments.len();
+        let start = n.saturating_sub(3);
+        for c in &t.comments[start..] {
+            context.push_str(&format!("# @{} ({}):\n", c.author, c.created_at));
+            for body_line in c.body.lines().take(6) {
+                context.push_str(&format!("#   {body_line}\n"));
+            }
+            if c.body.lines().count() > 6 {
+                context.push_str("#   …\n");
+            }
+        }
+        context.push_str("#\n");
+    }
+    let prompt = context;
 
     ratatui::restore();
-    let body = editor::compose(prompt);
+    let body = editor::compose(&prompt);
     *terminal = ratatui::init();
     terminal.clear().ok();
 
