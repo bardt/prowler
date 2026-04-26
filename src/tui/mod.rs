@@ -526,6 +526,10 @@ fn post_comment(
     terminal: &mut ratatui::DefaultTerminal,
     state: &mut review::ReviewState,
 ) -> Result<()> {
+    // LOCAL focus: post the current local hunk as a ```suggestion``` comment.
+    if matches!(state.focus, review::Focus::Local) {
+        return post_local_suggestion(terminal, state);
+    }
     // If a multi-line selection is active, post a multi-line thread; else
     // single-line at the cursor.
     let (path, side, start_line, end_line) = if state.selection_active() {
@@ -617,6 +621,93 @@ fn post_comment(
                 "[FAIL] PR #{pr_number} {path}:{end_line} {side_label}: {e:#}\n"
             ));
             state.set_status(format!("Post failed: {e}"), review::StatusKind::Error);
+        }
+    }
+    Ok(())
+}
+
+fn post_local_suggestion(
+    terminal: &mut ratatui::DefaultTerminal,
+    state: &mut review::ReviewState,
+) -> Result<()> {
+    let Some((path, start_line, end_line, suggestion_body)) = state.local_suggestion_target()
+    else {
+        state.set_status(
+            "No local hunk to suggest (focus LOCAL, then `]/[` to pick a hunk)",
+            review::StatusKind::Error,
+        );
+        return Ok(());
+    };
+
+    let line_label = if start_line == end_line {
+        format!("line {end_line}")
+    } else {
+        format!("lines {start_line}-{end_line}")
+    };
+    let prompt = format!(
+        "# Posting ```suggestion``` on `{path}` {line_label} (HEAD).\n\
+         # Lines starting with `#` are stripped. The suggestion block is appended\n\
+         # automatically — your text becomes the comment that wraps it.\n\
+         # Save and exit to post; abort the editor to cancel.\n\
+         #\n\
+         # Suggestion preview:\n\
+         {}\n\
+         #\n",
+        suggestion_body
+            .lines()
+            .map(|l| format!("# {l}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    ratatui::restore();
+    let body = editor::compose(&prompt);
+    *terminal = ratatui::init();
+    terminal.clear().ok();
+
+    let comment_text = match body {
+        Ok(b) if !b.is_empty() => b,
+        _ => return Ok(()),
+    };
+    // The user's prose lives above the suggestion block.
+    let full_body = format!("{comment_text}\n\n{suggestion_body}");
+
+    let pr_node_id = state.pr_node_id().to_owned();
+    let token = state.token.clone();
+    let owner = state.owner.clone();
+    let repo = state.repo.clone();
+    let pr_number = state.pr_number();
+
+    let start_param = if start_line == end_line { None } else { Some(start_line) };
+    let result = tokio::task::block_in_place(|| {
+        Handle::current().block_on(async {
+            crate::github::post_thread(
+                &token,
+                &pr_node_id,
+                &path,
+                crate::github::CommentSide::Head,
+                end_line,
+                start_param,
+                &full_body,
+            )
+            .await?;
+            crate::github::fetch_pr(&token, &owner, &repo, pr_number).await
+        })
+    });
+
+    match result {
+        Ok((meta, threads)) => {
+            state.apply_refresh(meta, threads);
+            state.set_status(
+                format!("Suggestion posted on {path}:{end_line}"),
+                review::StatusKind::Success,
+            );
+        }
+        Err(e) => {
+            log_post_error(&format!(
+                "[FAIL] suggestion PR #{pr_number} {path}:{end_line}: {e:#}\n"
+            ));
+            state.set_status(format!("Suggestion failed: {e}"), review::StatusKind::Error);
         }
     }
     Ok(())

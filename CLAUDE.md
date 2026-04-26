@@ -128,6 +128,8 @@ Toggle local panel with `L`.
 | `Esc` | Close help / description overlay |
 | `L` | Toggle local diff panel |
 | `R` | Refresh local diff |
+| `]`/`[` | (LOCAL focus) Next/prev local hunk |
+| `c` | (LOCAL focus) Post current hunk as ` ```suggestion ` comment |
 | `F5` / `Ctrl+R` | Re-fetch PR from GitHub (comments, viewed states) |
 | `S` | Submit review (verdict + summary) |
 | `q` | Back to dashboard |
@@ -144,7 +146,7 @@ Toggle local panel with `L`.
 
 ## Current milestone
 
-**M14 — Local hunk → suggestion comment**
+**M15 — LOCAL/HEAD pane alignment**
 
 ## Milestones overview
 
@@ -165,8 +167,8 @@ Toggle local panel with `L`.
 | M11 | Local diff panel | ✅ |
 | M12 | Dashboard | ✅ |
 | M13 | Missing review actions | ✅ |
-| M14 | Local hunk → suggestion comment | 🔲 next |
-| M15 | LOCAL/HEAD pane alignment | 🔲 |
+| M14 | Local hunk → suggestion comment | ✅ |
+| M15 | LOCAL/HEAD pane alignment | 🔲 next |
 | M16 | Hide-resolved toggle + file-panel fuzzy filter | 🔲 |
 | M17 | Configuration file (`~/.config/prowler/config.toml`) | 🔲 |
 | M18 | 1.0 polish: empty states, loading hints, persisted UI prefs | 🔲 |

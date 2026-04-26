@@ -84,6 +84,10 @@ pub struct ReviewState {
     local_diffs: Vec<Option<FileDiff>>,
     /// Viewport scroll offset for the LOCAL pane, per file.
     local_scroll: Vec<u16>,
+    /// Currently-selected local hunk per file. Used by M14: `c` while focused
+    /// on LOCAL posts this hunk as a ` ```suggestion ` comment. Advanced with
+    /// `]` / `[` while focus is Local.
+    local_hunk_idx: Vec<usize>,
     /// When true, the body area is replaced by a full-width description page
     /// (PR body + top-level conversation). Toggled with `D`.
     show_description: bool,
@@ -207,6 +211,7 @@ impl ReviewState {
             local_panel: false,
             local_diffs: (0..n).map(|_| None).collect(),
             local_scroll: vec![0; n],
+            local_hunk_idx: vec![0; n],
             show_description: false,
             description_scroll: 0,
             show_help: false,
@@ -1205,6 +1210,15 @@ impl ReviewState {
 
     pub fn next_hunk(&mut self) {
         let Some(i) = self.selected_idx() else { return };
+        if matches!(self.focus, Focus::Local) {
+            if let Some(diff) = self.local_diffs[i].as_ref() {
+                let total = diff.hunks.len();
+                if total > 0 {
+                    self.local_hunk_idx[i] = (self.local_hunk_idx[i] + 1).min(total - 1);
+                }
+            }
+            return;
+        }
         let cur = self.cursor[i];
         if let Some(&next) = self.laid[i]
             .hunk_starts
@@ -1218,6 +1232,10 @@ impl ReviewState {
 
     pub fn prev_hunk(&mut self) {
         let Some(i) = self.selected_idx() else { return };
+        if matches!(self.focus, Focus::Local) {
+            self.local_hunk_idx[i] = self.local_hunk_idx[i].saturating_sub(1);
+            return;
+        }
         let cur = self.cursor[i];
         if let Some(&prev) = self.laid[i]
             .hunk_starts
@@ -1228,6 +1246,62 @@ impl ReviewState {
             self.cursor[i] = prev as u16;
             self.ensure_cursor_visible(i);
         }
+    }
+
+    /// Build a `addPullRequestReviewThread` payload from the currently-selected
+    /// local hunk: HEAD line range + a `\`\`\`suggestion ` body containing the
+    /// new (worktree-side) content.
+    ///
+    /// Returns None when:
+    /// - LOCAL pane isn't visible / focus isn't Local.
+    /// - There's no local diff for the current file.
+    /// - The hunk has no anchor lines (pure addition with no surrounding
+    ///   context — rare since `similar` produces 3 lines of context).
+    pub fn local_suggestion_target(&self) -> Option<(String, u32, u32, String)> {
+        use crate::diff::{DiffLine, parse_hunk_header};
+        if !matches!(self.focus, Focus::Local) {
+            return None;
+        }
+        let i = self.selected_idx()?;
+        let local = self.local_diffs.get(i)?.as_ref()?;
+        let hunk_idx = *self.local_hunk_idx.get(i)?;
+        let hunk = local.hunks.get(hunk_idx)?;
+        let (mut old_line, mut _new_line) = parse_hunk_header(&hunk.header)?;
+
+        let mut anchor_min: Option<u32> = None;
+        let mut anchor_max: Option<u32> = None;
+        let mut body_lines: Vec<String> = Vec::new();
+
+        for line in &hunk.lines {
+            match line {
+                DiffLine::Context(t) | DiffLine::Moved(t) => {
+                    anchor_min.get_or_insert(old_line);
+                    anchor_max = Some(old_line);
+                    body_lines.push(t.trim_end_matches('\n').to_owned());
+                    old_line += 1;
+                    _new_line += 1;
+                }
+                DiffLine::Removed(_) => {
+                    anchor_min.get_or_insert(old_line);
+                    anchor_max = Some(old_line);
+                    // Removed = line at HEAD that's gone in worktree — skipped from
+                    // the suggestion body but contributes to the anchor range.
+                    old_line += 1;
+                }
+                DiffLine::Added(t) => {
+                    body_lines.push(t.trim_end_matches('\n').to_owned());
+                    _new_line += 1;
+                }
+            }
+        }
+
+        let start = anchor_min?;
+        let end = anchor_max?;
+        let body = format!(
+            "```suggestion\n{}\n```",
+            body_lines.join("\n")
+        );
+        Some((local.path.clone(), start, end, body))
     }
 
     fn totals(&self) -> (usize, usize) {
@@ -1395,6 +1469,8 @@ fn render_help(frame: &mut Frame, area: Rect) {
             &[
                 ("L", "toggle Local pane"),
                 ("R", "refresh Local diff for current file"),
+                ("] / [", "(in LOCAL focus) next / prev local hunk"),
+                ("c", "(in LOCAL focus) post current hunk as ```suggestion``` comment"),
             ],
         ),
         (
@@ -1644,12 +1720,14 @@ fn render_body(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
     if state.local_panel {
         let local_file = i.and_then(|i| state.local_diffs.get(i).and_then(|d| d.as_ref()));
         let local_scroll = i.map(|i| state.local_scroll[i]).unwrap_or(0);
+        let local_hunk = i.and_then(|i| state.local_hunk_idx.get(i).copied());
         render_local_pane(
             frame,
             cols[3],
             state.focus == Focus::Local,
             local_file,
             local_scroll,
+            local_hunk,
         );
     }
 }
@@ -1660,13 +1738,20 @@ fn render_local_pane(
     focused: bool,
     file: Option<&FileDiff>,
     scroll: u16,
+    selected_hunk: Option<usize>,
 ) {
     use crate::diff::DiffLine;
     use crate::tui::syntax;
 
+    let title = match (file, selected_hunk) {
+        (Some(f), Some(idx)) if !f.hunks.is_empty() => {
+            format!("LOCAL [4]  hunk {}/{}", idx + 1, f.hunks.len())
+        }
+        _ => "LOCAL [4]".to_owned(),
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("LOCAL [4]")
+        .title(title)
         .border_style(if focused {
             Style::default().fg(Color::Cyan)
         } else {
@@ -1686,13 +1771,18 @@ fn render_local_pane(
             let syn = syntax::highlighter();
             let syntax_ref = syn.syntax_for(&f.path);
             let mut out = Vec::new();
-            for hunk in &f.hunks {
-                out.push(Line::from(Span::styled(
-                    hunk.header.clone(),
-                    Style::default()
-                        .fg(Color::Magenta)
-                        .add_modifier(Modifier::BOLD),
-                )));
+            for (idx, hunk) in f.hunks.iter().enumerate() {
+                let is_selected = selected_hunk == Some(idx);
+                let marker = if is_selected { "\u{25B6} " } else { "  " };
+                out.push(Line::from(vec![
+                    Span::styled(marker, Style::default().fg(Color::Cyan)),
+                    Span::styled(
+                        hunk.header.clone(),
+                        Style::default()
+                            .fg(if is_selected { Color::Cyan } else { Color::Magenta })
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
                 for line in &hunk.lines {
                     let (text, marker, fg) = match line {
                         DiffLine::Added(t) => (t.as_str(), "+ ", Color::Green),
@@ -2197,6 +2287,45 @@ mod tests {
 
         apply_key(&mut s, KeyCode::Char('D'));
         assert!(!s.show_description);
+    }
+
+    #[test]
+    fn local_suggestion_target_returns_none_outside_local_focus() {
+        let s = state(&["a.rs"], vec![]);
+        assert!(s.local_suggestion_target().is_none());
+    }
+
+    #[test]
+    fn local_suggestion_target_builds_body_from_added_lines() {
+        let mut s = state(&["a.rs"], vec![]);
+        s.set_focus(Focus::Local);
+        // Inject a fake local diff for file 0.
+        s.local_diffs[0] = Some(FileDiff {
+            path: "a.rs".into(),
+            previous_path: None,
+            hunks: vec![Hunk {
+                header: "@@ -10,3 +10,3 @@".into(),
+                is_synthetic: false,
+                lines: vec![
+                    DiffLine::Context("ctx\n".into()),
+                    DiffLine::Removed("old line\n".into()),
+                    DiffLine::Added("new line\n".into()),
+                    DiffLine::Context("after\n".into()),
+                ],
+            }],
+            added: 1,
+            removed: 1,
+        });
+        s.local_hunk_idx[0] = 0;
+        let (path, start, end, body) = s.local_suggestion_target().unwrap();
+        assert_eq!(path, "a.rs");
+        assert_eq!(start, 10);
+        assert_eq!(end, 12);
+        assert!(body.starts_with("```suggestion\n"));
+        assert!(body.contains("new line"));
+        assert!(body.contains("ctx"));
+        assert!(body.contains("after"));
+        assert!(!body.contains("old line"));
     }
 
     #[test]
