@@ -266,6 +266,10 @@ fn event_loop(
             KeyCode::Char('c') => post_comment(terminal, &mut state)?,
             KeyCode::Char('r') => reply_to_comment(terminal, &mut state)?,
             KeyCode::Char('S') => submit_review(terminal, &mut state)?,
+            KeyCode::Char('o') => toggle_thread_resolved(&mut state)?,
+            KeyCode::Char('M') => edit_own_comment(terminal, &mut state)?,
+            KeyCode::Char('X') => delete_own_comment(&mut state)?,
+            KeyCode::Char('a') => apply_suggestion(&mut state)?,
             other => {
                 if review::apply_key(&mut state, other) {
                     return Ok(());
@@ -273,6 +277,151 @@ fn event_loop(
             }
         }
     }
+}
+
+fn toggle_thread_resolved(state: &mut review::ReviewState) -> Result<()> {
+    let Some((thread_id, was_resolved)) = state.current_thread_resolution() else {
+        state.set_status(
+            "No thread under cursor (or no permission)",
+            review::StatusKind::Error,
+        );
+        return Ok(());
+    };
+    let target_resolved = !was_resolved;
+    let token = state.token.clone();
+    let owner = state.owner.clone();
+    let repo = state.repo.clone();
+    let pr_number = state.pr_number();
+    let result = tokio::task::block_in_place(|| {
+        Handle::current().block_on(async {
+            crate::github::set_thread_resolved(&token, &thread_id, target_resolved).await?;
+            crate::github::fetch_pr(&token, &owner, &repo, pr_number).await
+        })
+    });
+    match result {
+        Ok((meta, threads)) => {
+            state.apply_refresh(meta, threads);
+            state.set_status(
+                if target_resolved {
+                    "Thread resolved"
+                } else {
+                    "Thread reopened"
+                },
+                review::StatusKind::Success,
+            );
+        }
+        Err(e) => {
+            log_post_error(&format!(
+                "[FAIL] resolve thread {thread_id} (target={target_resolved}): {e:#}\n"
+            ));
+            state.set_status(format!("Resolve failed: {e}"), review::StatusKind::Error);
+        }
+    }
+    Ok(())
+}
+
+fn edit_own_comment(
+    terminal: &mut ratatui::DefaultTerminal,
+    state: &mut review::ReviewState,
+) -> Result<()> {
+    let Some((comment_id, body)) = state.current_own_comment() else {
+        state.set_status("Cursor not on your comment", review::StatusKind::Error);
+        return Ok(());
+    };
+
+    let prompt = format!(
+        "# Editing your comment.\n\
+         # Lines starting with `#` are ignored. Save & exit to update; abort to cancel.\n\n{body}\n"
+    );
+
+    ratatui::restore();
+    let new_body = editor::compose(&prompt);
+    *terminal = ratatui::init();
+    terminal.clear().ok();
+
+    let new_body = match new_body {
+        Ok(b) if !b.is_empty() => b,
+        _ => return Ok(()),
+    };
+    if new_body == body {
+        state.set_status("Edit cancelled (no changes)", review::StatusKind::Success);
+        return Ok(());
+    }
+
+    let token = state.token.clone();
+    let owner = state.owner.clone();
+    let repo = state.repo.clone();
+    let pr_number = state.pr_number();
+    let result = tokio::task::block_in_place(|| {
+        Handle::current().block_on(async {
+            crate::github::update_review_comment(&token, &comment_id, &new_body).await?;
+            crate::github::fetch_pr(&token, &owner, &repo, pr_number).await
+        })
+    });
+    match result {
+        Ok((meta, threads)) => {
+            state.apply_refresh(meta, threads);
+            state.set_status("Comment updated", review::StatusKind::Success);
+        }
+        Err(e) => {
+            log_post_error(&format!("[FAIL] edit comment {comment_id}: {e:#}\n"));
+            state.set_status(format!("Edit failed: {e}"), review::StatusKind::Error);
+        }
+    }
+    Ok(())
+}
+
+fn delete_own_comment(state: &mut review::ReviewState) -> Result<()> {
+    let Some((comment_id, _)) = state.current_own_comment() else {
+        state.set_status("Cursor not on your comment", review::StatusKind::Error);
+        return Ok(());
+    };
+    if !state.arm_or_confirm_delete(&comment_id) {
+        state.set_status(
+            "Press X again to confirm delete",
+            review::StatusKind::Error,
+        );
+        return Ok(());
+    }
+    let token = state.token.clone();
+    let owner = state.owner.clone();
+    let repo = state.repo.clone();
+    let pr_number = state.pr_number();
+    let result = tokio::task::block_in_place(|| {
+        Handle::current().block_on(async {
+            crate::github::delete_review_comment(&token, &comment_id).await?;
+            crate::github::fetch_pr(&token, &owner, &repo, pr_number).await
+        })
+    });
+    match result {
+        Ok((meta, threads)) => {
+            state.apply_refresh(meta, threads);
+            state.set_status("Comment deleted", review::StatusKind::Success);
+        }
+        Err(e) => {
+            log_post_error(&format!("[FAIL] delete comment {comment_id}: {e:#}\n"));
+            state.set_status(format!("Delete failed: {e}"), review::StatusKind::Error);
+        }
+    }
+    Ok(())
+}
+
+fn apply_suggestion(state: &mut review::ReviewState) -> Result<()> {
+    let Some((suggestion, file, start_line, end_line)) = state.current_suggestion_target() else {
+        state.set_status(
+            "No suggestion at cursor (HEAD-side comments only)",
+            review::StatusKind::Error,
+        );
+        return Ok(());
+    };
+    match state.apply_suggestion(&file, start_line, end_line, &suggestion) {
+        Ok(()) => state.set_status(
+            format!("Applied suggestion to {}", file.display()),
+            review::StatusKind::Success,
+        ),
+        Err(e) => state.set_status(format!("Apply failed: {e:#}"), review::StatusKind::Error),
+    }
+    Ok(())
 }
 
 fn open_in_editor(

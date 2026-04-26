@@ -221,6 +221,50 @@ so the user knows to retry.
 
 ---
 
+## M13: Resolve / edit / delete / apply-suggestion (2026-04-26)
+
+**Choice:** Add four cursor-context actions to the review TUI:
+
+- `o` — toggle resolve on the thread under the cursor (refreshes after).
+- `M` — open the viewer's own comment body in `$EDITOR`; on save call
+  `updatePullRequestReviewComment` and refresh.
+- `X` two-step — first press arms, second press within `STATUS_TTL` (3s)
+  confirms and calls `deletePullRequestReviewComment`.
+- `a` — extract the first ` ```suggestion ` block in the comment under the
+  cursor and write it into the worktree file at the thread's HEAD line.
+
+**Two-step delete vs modal dialog:** rejected a confirmation modal because
+modals require a separate render path + key router + escape handling.
+The 3-second arming window plus a status-row hint ("Press X again to
+confirm delete") is simpler, reuses the existing status TTL, and matches
+patterns from cli tools like `git push --force` confirmations.
+
+**Suggestion application — HEAD side only:** GitHub allows ` ```suggestion `
+on either side of the diff, but practically they replace the *new* code.
+Anchoring on the BASE side means rewriting code that was already removed,
+which is almost always a confused author. Skipping with an error toast
+keeps `a` predictable.
+
+**Single-line apply:** v1 replaces a single anchor line. Multi-line
+suggestions exist (GraphQL exposes `original_start_line` on threads) but
+we don't currently render thread spans, only an anchor. When multi-line
+posting lands, multi-line apply lands with it.
+
+**No comment-author detection from local cache:** `viewerDidAuthor` comes
+straight from GraphQL on every comment. We could compute it locally from
+`viewer_login + comment.author`, but trusting the server is simpler and
+robust to login-name edge cases (renames, casing).
+
+**Suggestion block rendering:** lines inside a fence get a green BG via a
+new `BG_SUGGESTION` constant. Implemented as a flag on `Cell::CommentBody`
+(`in_suggestion: bool`) so the layout pass can mark each wrapped chunk in
+one walk over the body. Trade-off: a chunk that wraps across the fence
+boundary gets the wrong flag — acceptable for v1 since comment lines are
+typically much shorter than the wrap width and fences live alone on a
+line.
+
+---
+
 ## M12: Dashboard (2026-04-26)
 
 **Choice:** `prowler` (no subcommand) opens a dashboard listing PRs in three

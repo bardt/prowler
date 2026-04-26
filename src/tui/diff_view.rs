@@ -13,6 +13,7 @@ use crate::tui::syntax;
 const BG_ADDED: Color = Color::Rgb(20, 50, 25);
 const BG_REMOVED: Color = Color::Rgb(60, 25, 25);
 const BG_MOVED: Color = Color::Rgb(20, 35, 55);
+const BG_SUGGESTION: Color = Color::Rgb(160, 220, 160);
 
 #[derive(Clone)]
 pub enum Cell {
@@ -31,8 +32,13 @@ pub enum Cell {
         is_pending: bool,
         is_outdated: bool,
     },
-    /// Body line of a comment: `│ {text}`.
-    CommentBody(String),
+    /// Body line of a comment: `│ {text}`. `in_suggestion` flags lines that
+    /// are inside a ` ```suggestion ` … ` ``` ` fence (so the renderer can
+    /// highlight them as a green code block, and `a` knows what to apply).
+    CommentBody {
+        text: String,
+        in_suggestion: bool,
+    },
     /// Thread terminator: `└`.
     CommentEnd,
     /// Single-row summary of a collapsed thread: `▸ 3 comments • @alice: preview`.
@@ -52,6 +58,9 @@ pub struct Row {
     /// Set when this row is part of a comment thread (header / body / end).
     /// Used by `r` (reply) to identify which thread the cursor is on.
     pub thread_id: Option<String>,
+    /// Set when this row belongs to a specific comment (header or body lines).
+    /// Used by `M`/`X` (edit/delete) to identify the comment under the cursor.
+    pub comment_id: Option<String>,
 }
 
 pub struct LaidOutDiff {
@@ -77,6 +86,7 @@ impl LaidOutDiff {
                 base_line: None,
                 head_line: None,
                 thread_id: None,
+                comment_id: None,
             });
 
             let (mut old_line, mut new_line) =
@@ -93,6 +103,7 @@ impl LaidOutDiff {
                             base_line: Some(old_line),
                             head_line: Some(new_line),
                             thread_id: None,
+                            comment_id: None,
                         });
                         attach_threads(&mut rows, threads, Some(old_line), Some(new_line), wrap_width, expanded);
                         old_line += 1;
@@ -106,6 +117,7 @@ impl LaidOutDiff {
                             base_line: Some(old_line),
                             head_line: Some(new_line),
                             thread_id: None,
+                            comment_id: None,
                         });
                         attach_threads(&mut rows, threads, Some(old_line), Some(new_line), wrap_width, expanded);
                         old_line += 1;
@@ -141,6 +153,7 @@ impl LaidOutDiff {
                                 base_line,
                                 head_line,
                                 thread_id: None,
+                                comment_id: None,
                             });
                             attach_threads(&mut rows, threads, base_line, head_line, wrap_width, expanded);
                         }
@@ -182,6 +195,7 @@ fn attach_threads(
                     is_outdated: thread.is_outdated,
                 },
                 &thread.id,
+                None,
             );
             continue;
         }
@@ -199,29 +213,49 @@ fn attach_threads(
                     is_outdated: thread.is_outdated && idx == 0,
                 },
                 &thread.id,
+                Some(&comment.id),
             );
             if comment.body.is_empty() {
                 // Empty body still gets a `│` line so the thread structure is visible.
                 push_comment_row(
                     rows,
                     thread.side,
-                    Cell::CommentBody(String::new()),
+                    Cell::CommentBody { text: String::new(), in_suggestion: false },
                     &thread.id,
+                    Some(&comment.id),
                 );
             } else {
+                let mut in_suggestion = false;
                 for body_line in comment.body.lines() {
+                    let trimmed = body_line.trim_start();
+                    let is_fence = trimmed.starts_with("```");
+                    let is_suggest_open = is_fence
+                        && trimmed.trim_end_matches(|c: char| c.is_whitespace())
+                            .strip_prefix("```")
+                            .map(|s| s.trim() == "suggestion")
+                            .unwrap_or(false);
+                    let mark_this = in_suggestion || is_suggest_open;
                     for chunk in wrap_line(body_line, wrap_width) {
                         push_comment_row(
                             rows,
                             thread.side,
-                            Cell::CommentBody(chunk),
+                            Cell::CommentBody {
+                                text: chunk,
+                                in_suggestion: mark_this,
+                            },
                             &thread.id,
+                            Some(&comment.id),
                         );
+                    }
+                    if is_suggest_open {
+                        in_suggestion = true;
+                    } else if is_fence && in_suggestion {
+                        in_suggestion = false;
                     }
                 }
             }
         }
-        push_comment_row(rows, thread.side, Cell::CommentEnd, &thread.id);
+        push_comment_row(rows, thread.side, Cell::CommentEnd, &thread.id, None);
     }
 }
 
@@ -314,7 +348,13 @@ fn take_chars(s: &str, n: usize) -> String {
     out
 }
 
-fn push_comment_row(rows: &mut Vec<Row>, side: CommentSide, cell: Cell, thread_id: &str) {
+fn push_comment_row(
+    rows: &mut Vec<Row>,
+    side: CommentSide,
+    cell: Cell,
+    thread_id: &str,
+    comment_id: Option<&str>,
+) {
     let (base, head) = match side {
         CommentSide::Base => (cell, Cell::Empty),
         CommentSide::Head => (Cell::Empty, cell),
@@ -325,6 +365,7 @@ fn push_comment_row(rows: &mut Vec<Row>, side: CommentSide, cell: Cell, thread_i
         base_line: None,
         head_line: None,
         thread_id: Some(thread_id.to_owned()),
+        comment_id: comment_id.map(|s| s.to_owned()),
     });
 }
 
@@ -461,10 +502,22 @@ fn render_cell<'a>(cell: &'a Cell, syntax: &syntect::parsing::SyntaxReference) -
             }
             Line::from(spans)
         }
-        Cell::CommentBody(text) => Line::from(vec![
-            Span::styled("\u{2502} ", Style::default().fg(Color::Yellow)),
-            Span::styled(text.clone(), Style::default()),
-        ]),
+        Cell::CommentBody { text, in_suggestion } => {
+            if *in_suggestion {
+                Line::from(vec![
+                    Span::styled("\u{2502} ", Style::default().fg(Color::Yellow)),
+                    Span::styled(
+                        text.clone(),
+                        Style::default().fg(Color::Black).bg(BG_SUGGESTION),
+                    ),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::styled("\u{2502} ", Style::default().fg(Color::Yellow)),
+                    Span::styled(text.clone(), Style::default()),
+                ])
+            }
+        }
         Cell::CommentEnd => Line::from(Span::styled(
             "\u{2514}",
             Style::default().fg(Color::Yellow),

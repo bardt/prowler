@@ -106,21 +106,39 @@ Toggle local panel with `L`.
 |-----|--------|
 | `j`/`k` | Scroll diff |
 | `]`/`[` | Next/prev hunk |
-| `Tab` | Cycle panel focus |
+| `Tab` / `Shift+Tab` | Cycle panel focus |
 | `1`/`2`/`3`/`4` | Jump to panel |
 | `e` | Open HEAD in $EDITOR at current line |
 | `E` | Open BASE in $EDITOR at current line |
 | `v` | Mark file viewed |
 | `s` | Skip file |
 | `c` | Post inline comment |
-| `Enter` | Expand/collapse comment thread |
+| `r` | Reply to thread under cursor |
+| `o` | Resolve / unresolve thread under cursor |
+| `M` | Edit your own comment under cursor |
+| `X` `X` | Delete your own comment (two presses to confirm) |
+| `a` | Apply ` ```suggestion ` block at cursor to worktree file |
+| `n`/`N` | Next/prev comment thread (cross-file) |
+| `Enter` | Expand/collapse comment thread (or fold folder in Files panel) |
+| `?` | Toggle PR description / conversation panel |
 | `L` | Toggle local diff panel |
 | `R` | Refresh local diff |
+| `S` | Submit review (verdict + summary) |
 | `q` | Back to dashboard |
+
+### Dashboard view
+| Key | Action |
+|-----|--------|
+| `j`/`k` | Move selection (skips section headers) |
+| `g`/`G` | Jump to first/last selectable row |
+| `Enter` | Open the PR / session under cursor in review view |
+| `r` | Refresh GitHub data |
+| `d` | Delete a local session (worktree + state) |
+| `q` | Quit |
 
 ## Current milestone
 
-**M13 — Missing review actions**
+**M14 — Impact-based file sorting**
 
 ## Milestones overview
 
@@ -138,43 +156,48 @@ Toggle local panel with `L`.
 | M10 | Submit review | ✅ |
 | M11 | Local diff panel | ✅ |
 | M12 | Dashboard | ✅ |
-| M13 | Missing review actions | 🔲 next |
-| M14 | Impact-based file sorting | 🔲 |
+| M13 | Missing review actions (partial — see scope) | ✅ |
+| M14 | Impact-based file sorting | 🔲 next |
 
 **M10 scope:** A panel listing all comments in the current pending review, with a verdict
 selector (Approve / Comment / Request changes) and an optional summary body. Submits via
 GraphQL `submitPullRequestReview` (or creates the review with `addPullRequestReview` if
 no pending one exists). Without this, M9's `c` accumulates Pending comments forever.
 
-**M13 scope:** GitHub-supported review actions that prowler doesn't expose yet.
-Concretely:
+**M13 scope:** GitHub-supported review actions that prowler didn't expose
+before this milestone.
 
-- **Resolve / unresolve threads.** `resolveReviewThread` and `unresolveReviewThread`
-  GraphQL mutations. We already fetch `viewerCanResolve` / `viewerCanUnresolve` —
-  wire a key (probably `R` is taken; consider `o`/`O` for resolve/open) that toggles
-  a thread's `is_resolved` and refreshes.
-- **Edit own comments.** `updatePullRequestReviewComment` mutation. Detect that the
-  cursor is on a comment authored by the viewer; press a key (e.g. `E`-on-thread or
-  `Ctrl+E`) to open the body in `$EDITOR`, save, push.
-- **Delete own comments.** `deletePullRequestReviewComment`. Confirmation prompt
-  before sending.
-- **Apply suggested changes.** GitHub's ` ```suggestion ` blocks can be applied
-  directly. Detect the block in a comment body, render distinctly, and add a
-  keybind that writes the suggested replacement into the worktree file at the
-  thread's anchor line.
-- **Post local hunks as suggestion comments.** The reviewer's natural workflow:
-  open a file via `e`, edit it, see the local hunk in the LOCAL pane, then
-  ship that change as a ` ```suggestion ` block on the corresponding PR line.
-  Add a keybind (e.g. `c` while focused on a LOCAL hunk) that builds a
-  comment body wrapping the new lines in a `suggestion` fence and posts via
-  `addPullRequestReviewThread` with the HEAD line of the hunk as the anchor.
-  Depends on the LOCAL-pane alignment fix above so we know which HEAD line
-  the cursor maps to.
-- **Multi-line comments.** `c` currently anchors to a single line. Add a "selection
-  mode" (e.g. `V` to start, then `j/k` to extend, then `c`) that posts via
-  `addPullRequestReviewThread` with `startLine` + `startSide` + `line`.
+**Shipped:**
 
-These are the most user-facing gaps GitHub supports but we don't.
+- **Resolve / unresolve threads** (`o`). Uses `resolveReviewThread` /
+  `unresolveReviewThread` GraphQL mutations; respects `viewerCanResolve` /
+  `viewerCanUnresolve` (no-ops with an error toast if the viewer lacks
+  permission).
+- **Edit own comments** (`M`). Opens the existing body in `$EDITOR`; on save
+  calls `updatePullRequestReviewComment`. Detected via
+  `comment.viewerDidAuthor`. Preserves cancellation semantics
+  (empty/abort = no-op; same body = "no changes" toast).
+- **Delete own comments** (`X`, two-step). First press arms; second press
+  within 3 s confirms and calls `deletePullRequestReviewComment`. Same
+  arming TTL as the rest of the status row.
+- **Render suggestion blocks distinctly.** Lines inside a
+  ` ```suggestion ` … ` ``` ` fence are highlighted with a green background
+  (`BG_SUGGESTION`).
+- **Apply suggested changes** (`a`). Detects the suggestion block in the
+  comment under the cursor (HEAD-side only — suggestions replace new code,
+  not old) and writes it into the worktree file at the thread's anchor line.
+  Single-line replacement for v1; multi-line ranges (when GitHub provides
+  `original_start_line`) is a follow-up.
+
+**Deferred** (carried into the backlog / future milestones):
+
+- **Post local hunks as suggestion comments.** Depends on the LOCAL-pane
+  alignment fix; without alignment we can't reliably map a local hunk row
+  to its HEAD anchor line. Tracked in the backlog.
+- **Multi-line comments.** Selection mode (`V` to start, `j`/`k` to extend,
+  `c` to post) — tracked in the backlog so we can implement it after the
+  local-hunk-to-suggestion feature, since both want a similar selection
+  primitive.
 
 **M14 scope:** Optional file-panel ordering by dependency-graph "impact" — core
 modules imported by many others sort first, leaf files last. Per design.md:
@@ -203,6 +226,18 @@ new milestone.
 
 ## Backlog
 
+- **Multi-line review comments.** `c` and the M13 `a` suggestion-apply both
+  assume a single-line anchor. Adding a selection mode (e.g. `V` enters
+  visual-line, `j`/`k` extends, `c` posts) would let the user post threads
+  that anchor to a span. GraphQL field: `addPullRequestReviewThread.input`
+  takes optional `startLine` + `startSide`; the same selection primitive
+  feeds local-hunk-to-suggestion below.
+- **Local hunk → suggestion comment.** With LOCAL aligned to HEAD (next item),
+  pressing `c` while focused on a LOCAL hunk should wrap the new lines in
+  a ` ```suggestion ` fence and post via `addPullRequestReviewThread`. The
+  HEAD line at the cursor row becomes the anchor line; if the hunk spans
+  multiple HEAD lines, we use `startLine`/`line` from the multi-line work
+  above.
 - **Align LOCAL pane rows with HEAD pane.** Today the LOCAL pane is rendered as a
   unified diff (single column with `+`/`-` markers, walking the local hunks in
   order). HEAD is rendered as side-by-side rows where row Y corresponds to a

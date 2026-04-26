@@ -34,6 +34,10 @@ pub struct PrMetadata {
     pub body: String,
     /// Issue-level (non-inline) comments on the PR, in posting order.
     pub conversation: Vec<ConversationComment>,
+    /// Login of the currently authenticated user. Used to detect the viewer's
+    /// own comments for edit/delete actions.
+    #[allow(dead_code)]
+    pub viewer_login: String,
 }
 
 #[derive(Debug, Clone)]
@@ -58,24 +62,32 @@ pub enum CommentSide {
 
 #[derive(Debug, Clone)]
 pub struct ReviewComment {
+    /// Comment node ID — required for `updatePullRequestReviewComment` /
+    /// `deletePullRequestReviewComment` mutations.
+    pub id: String,
     pub author: String,
     pub body: String,
     /// Pre-formatted "YYYY-MM-DD HH:MM".
     pub created_at: String,
     /// True when the comment is part of an unsubmitted review (GraphQL `state == "PENDING"`).
     pub is_pending: bool,
+    /// True when the viewer wrote this comment (so they can edit / delete).
+    pub viewer_did_author: bool,
 }
 
-#[allow(dead_code)] // `id`, `is_resolved`, `is_outdated` are reserved for M9 / future UI.
+#[allow(dead_code)] // some fields reserved for future UI.
 #[derive(Debug, Clone)]
 pub struct CommentThread {
-    /// Thread node ID — used for `addPullRequestReviewThreadReply` (M9).
+    /// Thread node ID — used for `addPullRequestReviewThreadReply` (M9) and
+    /// `resolveReviewThread` / `unresolveReviewThread` (M13).
     pub id: String,
     pub path: String,
     pub side: CommentSide,
     pub line: u32,
     pub is_resolved: bool,
     pub is_outdated: bool,
+    pub viewer_can_resolve: bool,
+    pub viewer_can_unresolve: bool,
     /// Root comment first, replies in order.
     pub comments: Vec<ReviewComment>,
 }
@@ -219,6 +231,7 @@ pub async fn fetch_pr(
         is_draft: pr.is_draft,
         body: pr.body,
         conversation,
+        viewer_login: viewer_login.clone(),
     };
 
     let threads = gql_threads
@@ -237,14 +250,21 @@ pub async fn fetch_pr(
                 .comments
                 .nodes
                 .into_iter()
-                .map(|c| ReviewComment {
-                    author: c
+                .map(|c| {
+                    let author = c
                         .author
-                        .map(|a| a.login)
-                        .unwrap_or_else(|| "unknown".to_string()),
-                    body: c.body,
-                    created_at: c.created_at.format("%Y-%m-%d %H:%M").to_string(),
-                    is_pending: c.state == "PENDING",
+                        .as_ref()
+                        .map(|a| a.login.clone())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    let viewer_did_author = author == viewer_login;
+                    ReviewComment {
+                        id: c.id,
+                        author,
+                        body: c.body,
+                        created_at: c.created_at.format("%Y-%m-%d %H:%M").to_string(),
+                        is_pending: c.state == "PENDING",
+                        viewer_did_author,
+                    }
                 })
                 .collect();
             Some(CommentThread {
@@ -254,6 +274,8 @@ pub async fn fetch_pr(
                 line,
                 is_resolved: t.is_resolved,
                 is_outdated: t.is_outdated,
+                viewer_can_resolve: t.viewer_can_resolve,
+                viewer_can_unresolve: t.viewer_can_unresolve,
                 comments,
             })
         })
@@ -488,6 +510,84 @@ fn into_dashboard_pr(node: GqlSearchNode) -> Option<DashboardPr> {
     })
 }
 
+/// Resolve or unresolve a review thread via GraphQL.
+pub async fn set_thread_resolved(token: &str, thread_id: &str, resolved: bool) -> Result<()> {
+    let octocrab = Octocrab::builder()
+        .personal_token(token.to_owned())
+        .build()
+        .context("failed to build GitHub client")?;
+    let mutation = if resolved {
+        "resolveReviewThread"
+    } else {
+        "unresolveReviewThread"
+    };
+    let query = format!(
+        "mutation($tid: ID!) {{ {mutation}(input: {{ threadId: $tid }}) {{ thread {{ id isResolved }} }} }}"
+    );
+    let payload = serde_json::json!({
+        "query": query,
+        "variables": { "tid": thread_id },
+    });
+    let response: serde_json::Value = octocrab
+        .graphql(&payload)
+        .await
+        .with_context(|| format!("GraphQL {mutation} request failed for thread {thread_id}"))?;
+    if let Some(errors) = response.get("errors") {
+        bail!("GraphQL {mutation} for thread {thread_id}: {errors}");
+    }
+    Ok(())
+}
+
+/// Edit the body of an existing review comment authored by the viewer.
+pub async fn update_review_comment(token: &str, comment_id: &str, body: &str) -> Result<()> {
+    let octocrab = Octocrab::builder()
+        .personal_token(token.to_owned())
+        .build()
+        .context("failed to build GitHub client")?;
+    let payload = serde_json::json!({
+        "query": r#"
+mutation($cid: ID!, $body: String!) {
+  updatePullRequestReviewComment(input: { pullRequestReviewCommentId: $cid, body: $body }) {
+    pullRequestReviewComment { id }
+  }
+}"#,
+        "variables": { "cid": comment_id, "body": body },
+    });
+    let response: serde_json::Value = octocrab
+        .graphql(&payload)
+        .await
+        .with_context(|| format!("updatePullRequestReviewComment failed for {comment_id}"))?;
+    if let Some(errors) = response.get("errors") {
+        bail!("updatePullRequestReviewComment for {comment_id}: {errors}");
+    }
+    Ok(())
+}
+
+/// Delete a review comment authored by the viewer.
+pub async fn delete_review_comment(token: &str, comment_id: &str) -> Result<()> {
+    let octocrab = Octocrab::builder()
+        .personal_token(token.to_owned())
+        .build()
+        .context("failed to build GitHub client")?;
+    let payload = serde_json::json!({
+        "query": r#"
+mutation($cid: ID!) {
+  deletePullRequestReviewComment(input: { id: $cid }) {
+    pullRequestReview { id }
+  }
+}"#,
+        "variables": { "cid": comment_id },
+    });
+    let response: serde_json::Value = octocrab
+        .graphql(&payload)
+        .await
+        .with_context(|| format!("deletePullRequestReviewComment failed for {comment_id}"))?;
+    if let Some(errors) = response.get("errors") {
+        bail!("deletePullRequestReviewComment for {comment_id}: {errors}");
+    }
+    Ok(())
+}
+
 /// Mark or unmark a PR file as viewed via GitHub GraphQL.
 pub async fn set_viewed(
     token: &str,
@@ -678,6 +778,8 @@ struct GqlThread {
     diff_side: String,
     is_resolved: bool,
     is_outdated: bool,
+    viewer_can_resolve: bool,
+    viewer_can_unresolve: bool,
     comments: GqlCommentsConn,
 }
 
@@ -690,6 +792,7 @@ struct GqlCommentsConn {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GqlComment {
+    id: String,
     author: Option<GqlActor>,
     body: String,
     created_at: chrono::DateTime<chrono::Utc>,
@@ -869,8 +972,10 @@ query($owner: String!, $name: String!, $number: Int!) {
           diffSide
           isResolved
           isOutdated
+          viewerCanResolve
+          viewerCanUnresolve
           comments(first: 100) {
-            nodes { author { login } body createdAt state }
+            nodes { id author { login } body createdAt state }
           }
         }
         pageInfo { hasNextPage endCursor }
@@ -906,8 +1011,10 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String!) {
           diffSide
           isResolved
           isOutdated
+          viewerCanResolve
+          viewerCanUnresolve
           comments(first: 100) {
-            nodes { author { login } body createdAt state }
+            nodes { id author { login } body createdAt state }
           }
         }
         pageInfo { hasNextPage endCursor }

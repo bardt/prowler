@@ -89,6 +89,10 @@ pub struct ReviewState {
     /// (PR body + top-level conversation). Toggled with `?`.
     show_description: bool,
     description_scroll: u16,
+    /// Two-step delete confirmation: first `X` press records the comment id and
+    /// timestamp; a second `X` press on the same comment within `STATUS_TTL`
+    /// triggers the actual delete.
+    pending_delete: Option<(String, Instant)>,
 }
 
 /// Default wrap width used before we've measured the actual pane (e.g. on first paint).
@@ -176,6 +180,7 @@ impl ReviewState {
             local_scroll: vec![0; n],
             show_description: false,
             description_scroll: 0,
+            pending_delete: None,
         }
     }
 
@@ -420,6 +425,127 @@ impl ReviewState {
             return false;
         };
         row.thread_id.is_none() && (row.base_line.is_some() || row.head_line.is_some())
+    }
+
+    /// The thread under the cursor, if any.
+    pub fn current_thread(&self) -> Option<&CommentThread> {
+        let i = self.selected_idx()?;
+        let cur = self.cursor[i] as usize;
+        let row = self.laid[i].rows.get(cur)?;
+        let tid = row.thread_id.as_deref()?;
+        self.threads_by_file[i].iter().find(|t| t.id == tid)
+    }
+
+    /// The (thread_id, is_resolved) of the thread under the cursor.
+    pub fn current_thread_resolution(&self) -> Option<(String, bool)> {
+        let t = self.current_thread()?;
+        let toggleable = if t.is_resolved {
+            t.viewer_can_unresolve
+        } else {
+            t.viewer_can_resolve
+        };
+        if !toggleable {
+            return None;
+        }
+        Some((t.id.clone(), t.is_resolved))
+    }
+
+    /// First press of `X` arms a delete; the second press within `STATUS_TTL`
+    /// for the same comment confirms. Returns true when the caller should
+    /// actually run the mutation.
+    pub fn arm_or_confirm_delete(&mut self, comment_id: &str) -> bool {
+        let now = Instant::now();
+        if let Some((id, t)) = &self.pending_delete {
+            if id == comment_id && now.duration_since(*t) <= STATUS_TTL {
+                self.pending_delete = None;
+                return true;
+            }
+        }
+        self.pending_delete = Some((comment_id.to_owned(), now));
+        false
+    }
+
+    /// The (id, body) of the comment under the cursor, but only when the viewer
+    /// authored it (i.e. the viewer can edit / delete it).
+    pub fn current_own_comment(&self) -> Option<(String, String)> {
+        let i = self.selected_idx()?;
+        let cur = self.cursor[i] as usize;
+        let row = self.laid[i].rows.get(cur)?;
+        let cid = row.comment_id.as_deref()?;
+        let tid = row.thread_id.as_deref()?;
+        let thread = self.threads_by_file[i].iter().find(|t| t.id == tid)?;
+        let comment = thread.comments.iter().find(|c| c.id == cid)?;
+        if !comment.viewer_did_author {
+            return None;
+        }
+        Some((comment.id.clone(), comment.body.clone()))
+    }
+
+    /// Extract a `\`\`\`suggestion ... \`\`\`` block from the comment under the
+    /// cursor, plus the file path and 1-indexed HEAD line where it should
+    /// apply. Only matches threads on the HEAD side, since suggestions replace
+    /// the new code, not the old.
+    pub fn current_suggestion_target(
+        &self,
+    ) -> Option<(String, std::path::PathBuf, u32, u32)> {
+        let i = self.selected_idx()?;
+        let cur = self.cursor[i] as usize;
+        let row = self.laid[i].rows.get(cur)?;
+        let cid = row.comment_id.as_deref()?;
+        let tid = row.thread_id.as_deref()?;
+        let thread = self.threads_by_file[i].iter().find(|t| t.id == tid)?;
+        if thread.side != CommentSide::Head {
+            return None;
+        }
+        let comment = thread.comments.iter().find(|c| c.id == cid)?;
+        let suggestion = extract_suggestion(&comment.body)?;
+        Some((
+            suggestion,
+            self.session.worktree_path.join(&thread.path),
+            thread.line,
+            thread.line,
+        ))
+    }
+
+    /// Apply a suggestion text to a worktree file at the given 1-indexed line range
+    /// (inclusive). Replaces the line in place, preserving the trailing newline if
+    /// the original file had one.
+    pub fn apply_suggestion(
+        &self,
+        file: &std::path::Path,
+        start_line: u32,
+        end_line: u32,
+        suggestion: &str,
+    ) -> anyhow::Result<()> {
+        use anyhow::Context;
+        let original = std::fs::read_to_string(file)
+            .with_context(|| format!("failed to read {}", file.display()))?;
+        let trailing_nl = original.ends_with('\n');
+        let mut lines: Vec<&str> = original.split('\n').collect();
+        if trailing_nl {
+            // split('\n') on text ending in \n gives a trailing empty entry; drop it.
+            lines.pop();
+        }
+        let start = start_line.saturating_sub(1) as usize;
+        let end = (end_line as usize).min(lines.len());
+        if start > lines.len() {
+            anyhow::bail!("line {start_line} is past EOF");
+        }
+        let suggestion_lines: Vec<&str> = suggestion.split('\n').collect();
+        // GitHub's suggestion blocks include one trailing newline that makes the
+        // `\`\`\`` close-fence its own line; strip a trailing empty entry if present.
+        let mut suggestion_lines = suggestion_lines;
+        if suggestion_lines.last().map(|s| s.is_empty()).unwrap_or(false) {
+            suggestion_lines.pop();
+        }
+        lines.splice(start..end, suggestion_lines);
+        let mut out = lines.join("\n");
+        if trailing_nl {
+            out.push('\n');
+        }
+        std::fs::write(file, out)
+            .with_context(|| format!("failed to write {}", file.display()))?;
+        Ok(())
     }
 
     /// How many of the visible (non-outdated) comments belong to a pending review.
@@ -796,6 +922,31 @@ impl ReviewState {
 /// `q` (quit), `false` otherwise. Side-effectful keys (`c`, `r`, `S`, `e`, `E`)
 /// are NOT handled here — the event loop dispatches them itself because they
 /// suspend the TUI / spawn editors / await network I/O.
+/// Extract the body of a ` ```suggestion ` … ` ``` ` block from a comment body.
+/// Returns the inner text (lines between fences, joined with `\n`). If multiple
+/// blocks exist, only the first is returned.
+pub fn extract_suggestion(body: &str) -> Option<String> {
+    let mut iter = body.lines();
+    let mut content = Vec::new();
+    let mut in_block = false;
+    for line in iter.by_ref() {
+        let trimmed = line.trim_start();
+        if !in_block {
+            if let Some(rest) = trimmed.strip_prefix("```") {
+                if rest.trim() == "suggestion" {
+                    in_block = true;
+                }
+            }
+            continue;
+        }
+        if trimmed.starts_with("```") {
+            return Some(content.join("\n"));
+        }
+        content.push(line);
+    }
+    None
+}
+
 pub fn apply_key(state: &mut ReviewState, key: KeyCode) -> bool {
     match key {
         KeyCode::Char('q') => return true,
@@ -1209,6 +1360,13 @@ fn render_hotkeys(frame: &mut Frame, area: Rect, state: &ReviewState) {
             if state.cursor_on_thread() {
                 groups.push(("Enter", " expand  "));
                 groups.push(("r", " reply  "));
+                groups.push(("o", " resolve  "));
+                if state.current_own_comment().is_some() {
+                    groups.push(("M/X", " edit/del  "));
+                }
+                if state.current_suggestion_target().is_some() {
+                    groups.push(("a", " apply  "));
+                }
             } else if state.cursor_on_code_line() {
                 groups.push(("e/E", " edit  "));
                 groups.push(("c", " comment  "));
@@ -1319,6 +1477,7 @@ mod tests {
             is_draft: false,
             body: String::new(),
             conversation: Vec::new(),
+            viewer_login: "viewer".into(),
         }
     }
 
@@ -1348,11 +1507,15 @@ mod tests {
             line,
             is_resolved: false,
             is_outdated: false,
+            viewer_can_resolve: true,
+            viewer_can_unresolve: false,
             comments: vec![ReviewComment {
+                id: format!("{id}-c0"),
                 author: "alice".into(),
                 body: body.into(),
                 created_at: "2026-04-26 10:00".into(),
                 is_pending: false,
+                viewer_did_author: false,
             }],
         }
     }
@@ -1669,5 +1832,77 @@ mod tests {
         apply_key(&mut s, KeyCode::Char('n'));
         assert_eq!(s.selected_file_idx(), Some(1), "n should jump to the file with the thread");
         assert!(s.cursor_on_thread(), "cursor should land on the thread row");
+    }
+
+    #[test]
+    fn extract_suggestion_picks_first_block() {
+        let body = "comment text\n```suggestion\nlet x = 1;\nlet y = 2;\n```\nmore text";
+        assert_eq!(
+            super::extract_suggestion(body).as_deref(),
+            Some("let x = 1;\nlet y = 2;")
+        );
+    }
+
+    #[test]
+    fn extract_suggestion_returns_none_when_no_block() {
+        assert!(super::extract_suggestion("just a regular comment").is_none());
+    }
+
+    #[test]
+    fn extract_suggestion_ignores_plain_code_blocks() {
+        let body = "```rust\nfn x() {}\n```";
+        assert!(super::extract_suggestion(body).is_none());
+    }
+
+    #[test]
+    fn arm_or_confirm_delete_requires_two_presses() {
+        let mut s = state(&["a.rs"], vec![]);
+        let id = "C1";
+        assert!(!s.arm_or_confirm_delete(id), "first press should arm only");
+        assert!(s.arm_or_confirm_delete(id), "second press confirms");
+        assert!(
+            !s.arm_or_confirm_delete(id),
+            "third press re-arms (confirmation was consumed)"
+        );
+    }
+
+    #[test]
+    fn arm_or_confirm_delete_resets_on_different_comment() {
+        let mut s = state(&["a.rs"], vec![]);
+        s.arm_or_confirm_delete("C1");
+        assert!(
+            !s.arm_or_confirm_delete("C2"),
+            "different comment id resets arming"
+        );
+    }
+
+    #[test]
+    fn current_thread_resolution_returns_none_when_cursor_not_on_thread() {
+        let s = state(&["a.rs"], vec![]);
+        assert!(s.current_thread_resolution().is_none());
+    }
+
+    #[test]
+    fn apply_suggestion_replaces_target_line_in_file() {
+        let s = state(&["a.rs"], vec![]);
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("prowler-suggest-test-{}.txt", std::process::id()));
+        std::fs::write(&path, "line1\nline2\nline3\n").unwrap();
+        s.apply_suggestion(&path, 2, 2, "REPLACED").unwrap();
+        let result = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(result, "line1\nREPLACED\nline3\n");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn apply_suggestion_handles_multi_line_replacement() {
+        let s = state(&["a.rs"], vec![]);
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("prowler-suggest-multi-{}.txt", std::process::id()));
+        std::fs::write(&path, "a\nb\nc\nd\n").unwrap();
+        s.apply_suggestion(&path, 2, 3, "X\nY\nZ").unwrap();
+        let result = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(result, "a\nX\nY\nZ\nd\n");
+        std::fs::remove_file(&path).ok();
     }
 }
