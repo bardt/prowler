@@ -95,6 +95,12 @@ pub struct ReviewState {
     /// timestamp; a second `X` press on the same comment within `STATUS_TTL`
     /// triggers the actual delete.
     pending_delete: Option<(String, Instant)>,
+    /// Live filter on the file panel — set by `/`, applied as case-insensitive
+    /// substring against full paths. Empty means no filtering. While
+    /// `filter_editing` is true, key dispatch routes printable chars / Backspace
+    /// into this string instead of the normal command keymap.
+    file_filter: String,
+    file_filter_editing: bool,
     /// Active multi-line selection started with `V`. Anchor is the row index
     /// in `laid[file_idx]` where the selection began; `side` is the diff side
     /// the selection lives on (fixed at start). The selection extends from
@@ -205,6 +211,8 @@ impl ReviewState {
             description_scroll: 0,
             show_help: false,
             pending_delete: None,
+            file_filter: String::new(),
+            file_filter_editing: false,
             selection: None,
         }
     }
@@ -314,6 +322,66 @@ impl ReviewState {
             &self.expanded_threads,
             self.session.hide_resolved,
         );
+    }
+
+    /// Begin file-filter editing: cursor goes to Files, query starts empty,
+    /// keystrokes route into the query until `Esc` or `Enter`.
+    pub fn start_file_filter(&mut self) {
+        self.focus = Focus::Files;
+        self.file_filter.clear();
+        self.file_filter_editing = true;
+        self.refresh_visible_rows();
+    }
+
+    pub fn file_filter_editing(&self) -> bool {
+        self.file_filter_editing
+    }
+
+    pub fn file_filter_query(&self) -> &str {
+        &self.file_filter
+    }
+
+    pub fn file_filter_push(&mut self, ch: char) {
+        self.file_filter.push(ch);
+        self.refresh_visible_rows();
+    }
+
+    pub fn file_filter_backspace(&mut self) {
+        self.file_filter.pop();
+        self.refresh_visible_rows();
+    }
+
+    /// `Esc` — clear filter and exit edit mode.
+    pub fn cancel_file_filter(&mut self) {
+        self.file_filter.clear();
+        self.file_filter_editing = false;
+        self.refresh_visible_rows();
+    }
+
+    /// `Enter` — keep filter, exit edit mode (so j/k/etc. work normally).
+    pub fn commit_file_filter(&mut self) {
+        self.file_filter_editing = false;
+    }
+
+    fn refresh_visible_rows(&mut self) {
+        let paths: Vec<String> = self.diffs.iter().map(|d| d.path.clone()).collect();
+        let needle = if self.file_filter.is_empty() {
+            None
+        } else {
+            Some(self.file_filter.as_str())
+        };
+        self.visible_rows = self.file_tree.visible_rows_filtered(needle, &paths);
+        // Move cursor to the first visible file row if the current selection
+        // is now hidden.
+        let cur = self.list_state.selected().unwrap_or(0);
+        if cur >= self.visible_rows.len() {
+            let first_file = self
+                .visible_rows
+                .iter()
+                .position(|r| matches!(r.item, VisibleItem::File { .. }));
+            self.list_state
+                .select(first_file.or_else(|| (!self.visible_rows.is_empty()).then_some(0)));
+        }
     }
 
     /// Toggle hide-resolved and persist to session.
@@ -1199,8 +1267,19 @@ pub fn extract_suggestion(body: &str) -> Option<String> {
 }
 
 pub fn apply_key(state: &mut ReviewState, key: KeyCode) -> bool {
+    if state.file_filter_editing {
+        match key {
+            KeyCode::Esc => state.cancel_file_filter(),
+            KeyCode::Enter => state.commit_file_filter(),
+            KeyCode::Backspace => state.file_filter_backspace(),
+            KeyCode::Char(c) => state.file_filter_push(c),
+            _ => {}
+        }
+        return false;
+    }
     match key {
         KeyCode::Char('q') => return true,
+        KeyCode::Char('/') => state.start_file_filter(),
         KeyCode::Tab => state.cycle_focus(),
         KeyCode::BackTab => state.cycle_focus_back(),
         KeyCode::Char('1') => state.set_focus(Focus::Files),
@@ -1281,6 +1360,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
                 ("Tab / Shift+Tab", "cycle panel focus"),
                 ("1 / 2 / 3 / 4", "focus Files / Base / Head / Local"),
                 ("g / G", "first / last (in dashboard)"),
+                ("/", "filter file panel by substring"),
             ],
         ),
         (
@@ -1703,9 +1783,16 @@ fn render_files(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
         })
         .collect();
 
+    let title = if state.file_filter_editing() {
+        format!("FILES [1]  /{}_", state.file_filter_query())
+    } else if !state.file_filter_query().is_empty() {
+        format!("FILES [1]  /{}", state.file_filter_query())
+    } else {
+        format!("FILES [1]  {} files", state.diffs.len())
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!("FILES [1]  {} files", state.diffs.len()))
+        .title(title)
         .border_style(if state.focus == Focus::Files {
             Style::default().fg(Color::Cyan)
         } else {
@@ -2110,6 +2197,39 @@ mod tests {
 
         apply_key(&mut s, KeyCode::Char('D'));
         assert!(!s.show_description);
+    }
+
+    #[test]
+    fn slash_starts_file_filter_and_typing_narrows_visible_rows() {
+        let mut s = state(&["src/foo.rs", "src/bar.rs", "tests/baz.rs"], vec![]);
+        let before = s.visible_rows.iter().filter(|r| matches!(r.item, VisibleItem::File { .. })).count();
+        assert_eq!(before, 3);
+
+        apply_key(&mut s, KeyCode::Char('/'));
+        assert!(s.file_filter_editing());
+        apply_key(&mut s, KeyCode::Char('b'));
+        apply_key(&mut s, KeyCode::Char('a'));
+        apply_key(&mut s, KeyCode::Char('z'));
+        assert_eq!(s.file_filter_query(), "baz");
+
+        let after = s.visible_rows.iter().filter(|r| matches!(r.item, VisibleItem::File { .. })).count();
+        assert_eq!(after, 1, "only baz.rs should remain visible");
+
+        apply_key(&mut s, KeyCode::Esc);
+        assert!(!s.file_filter_editing());
+        assert_eq!(s.file_filter_query(), "");
+        let restored = s.visible_rows.iter().filter(|r| matches!(r.item, VisibleItem::File { .. })).count();
+        assert_eq!(restored, 3, "Esc restores all rows");
+    }
+
+    #[test]
+    fn enter_commits_file_filter_keeping_query() {
+        let mut s = state(&["src/foo.rs", "src/bar.rs"], vec![]);
+        apply_key(&mut s, KeyCode::Char('/'));
+        apply_key(&mut s, KeyCode::Char('f'));
+        apply_key(&mut s, KeyCode::Enter);
+        assert!(!s.file_filter_editing());
+        assert_eq!(s.file_filter_query(), "f");
     }
 
     #[test]

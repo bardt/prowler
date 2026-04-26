@@ -120,6 +120,7 @@ Toggle local panel with `L`.
 | `X` `X` | Delete your own comment (two presses to confirm) |
 | `a` | Apply ` ```suggestion ` block at cursor to worktree file |
 | `H` | Toggle hide-resolved threads (persisted in session) |
+| `/` | Filter file panel; type to narrow, Enter to commit, Esc to clear |
 | `n`/`N` | Next/prev comment thread (cross-file) |
 | `Enter` | Expand/collapse comment thread (or fold folder in Files panel) |
 | `?` | Toggle keymap help overlay |

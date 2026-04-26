@@ -48,9 +48,24 @@ impl FileTree {
     }
 
     pub fn visible_rows(&self) -> Vec<VisibleRow> {
+        self.visible_rows_filtered(None, &[])
+    }
+
+    /// Walk the tree, hiding files whose path doesn't match `filter` (case-
+    /// insensitive substring) and dropping the diff index from `hidden_diffs`.
+    /// Folders are emitted only when at least one of their descendants is visible.
+    /// Pass `None` for an empty filter (no path filtering).
+    pub fn visible_rows_filtered(
+        &self,
+        filter: Option<&str>,
+        diff_paths: &[String],
+    ) -> Vec<VisibleRow> {
+        let needle = filter
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty());
         let mut rows = Vec::new();
         let mut path = Vec::new();
-        collect_visible(&self.roots, 0, &mut path, &mut rows);
+        collect_visible_filtered(&self.roots, 0, &mut path, &mut rows, needle.as_deref(), diff_paths);
         rows
     }
 
@@ -153,38 +168,90 @@ fn sort_key(node: &TreeNode) -> (u8, &str) {
     }
 }
 
-fn collect_visible(
+fn collect_visible_filtered(
     nodes: &[TreeNode],
     depth: usize,
     path: &mut Vec<usize>,
     out: &mut Vec<VisibleRow>,
+    needle: Option<&str>,
+    diff_paths: &[String],
 ) {
     for (idx, node) in nodes.iter().enumerate() {
         path.push(idx);
         match node {
             TreeNode::Folder(f) => {
-                out.push(VisibleRow {
-                    depth,
-                    item: VisibleItem::Folder {
-                        path: path.clone(),
-                        name: f.name.clone(),
-                        collapsed: f.collapsed,
-                    },
-                });
-                if !f.collapsed {
-                    collect_visible(&f.children, depth + 1, path, out);
+                if let Some(n) = needle {
+                    // When filtering: only emit folder if it has a matching
+                    // descendant. Force-expand the folder so the filtered file
+                    // is visible regardless of its `collapsed` state.
+                    if !folder_has_match(f, n, diff_paths) {
+                        path.pop();
+                        continue;
+                    }
+                    out.push(VisibleRow {
+                        depth,
+                        item: VisibleItem::Folder {
+                            path: path.clone(),
+                            name: f.name.clone(),
+                            collapsed: false,
+                        },
+                    });
+                    collect_visible_filtered(&f.children, depth + 1, path, out, needle, diff_paths);
+                } else {
+                    out.push(VisibleRow {
+                        depth,
+                        item: VisibleItem::Folder {
+                            path: path.clone(),
+                            name: f.name.clone(),
+                            collapsed: f.collapsed,
+                        },
+                    });
+                    if !f.collapsed {
+                        collect_visible_filtered(&f.children, depth + 1, path, out, needle, diff_paths);
+                    }
                 }
             }
             TreeNode::File(file) => {
-                out.push(VisibleRow {
-                    depth,
-                    item: VisibleItem::File {
-                        diff_idx: file.diff_idx,
-                        name: file.name.clone(),
-                    },
-                });
+                let visible = match needle {
+                    None => true,
+                    Some(n) => diff_paths
+                        .get(file.diff_idx)
+                        .map(|p| p.to_lowercase().contains(n))
+                        .unwrap_or(false),
+                };
+                if visible {
+                    out.push(VisibleRow {
+                        depth,
+                        item: VisibleItem::File {
+                            diff_idx: file.diff_idx,
+                            name: file.name.clone(),
+                        },
+                    });
+                }
             }
         }
         path.pop();
     }
+}
+
+fn folder_has_match(folder: &FolderNode, needle: &str, diff_paths: &[String]) -> bool {
+    for child in &folder.children {
+        match child {
+            TreeNode::File(f) => {
+                if diff_paths
+                    .get(f.diff_idx)
+                    .map(|p| p.to_lowercase().contains(needle))
+                    .unwrap_or(false)
+                {
+                    return true;
+                }
+            }
+            TreeNode::Folder(f) => {
+                if folder_has_match(f, needle, diff_paths) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
