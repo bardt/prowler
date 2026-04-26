@@ -93,6 +93,11 @@ pub struct ReviewState {
     /// Channel for messages from background tasks (currently the viewed-state
     /// sync). The event loop drains this and turns each into a status row.
     status_tx: UnboundedSender<StatusMessage>,
+    /// `true` for files whose `diffs[i].hunks` has been populated by
+    /// `compute_diff_for`. False entries render as the empty-diff
+    /// placeholder until visited; visiting computes the diff lazily.
+    /// Eliminates the synchronous setup stall on large PRs.
+    diffs_computed: Vec<bool>,
     /// Active diff mode. Toggled with `L`. See `DiffMode`.
     diff_mode: DiffMode,
     /// Per-file head→worktree diff (data for `HeadLocal` mode). Lazily computed
@@ -218,7 +223,7 @@ impl ReviewState {
             .iter()
             .position(|r| matches!(r.item, VisibleItem::File { .. }));
         list_state.select(first_file.or_else(|| (!visible_rows.is_empty()).then_some(0)));
-        Self {
+        let mut state = Self {
             meta,
             diffs,
             laid,
@@ -252,6 +257,7 @@ impl ReviewState {
             last_layout_width: DEFAULT_WRAP_WIDTH,
             expanded_threads,
             status_tx,
+            diffs_computed: vec![false; n],
             diff_mode: DiffMode::BaseHead,
             local_diffs: (0..n).map(|_| None).collect(),
             local_laid: (0..n).map(|_| None).collect(),
@@ -264,7 +270,13 @@ impl ReviewState {
             file_filter: String::new(),
             file_filter_editing: false,
             selection: None,
+        };
+        // Compute the initial file's diff up-front so the first render shows
+        // real content. Other files compute lazily on switch.
+        if let Some(idx) = state.selected_idx() {
+            state.ensure_diff_computed(idx);
         }
+        state
     }
 
     /// Toggle the full-width PR description / conversation page.
@@ -447,6 +459,62 @@ impl ReviewState {
             "Showing resolved threads"
         };
         self.set_status(msg, StatusKind::Success);
+    }
+
+    /// Compute the BASE/HEAD diff for file `i` if not already done. Idempotent.
+    /// Re-runs orphan-context enrichment and lays out this file only.
+    pub fn ensure_diff_computed(&mut self, i: usize) {
+        if self.diffs_computed.get(i).copied().unwrap_or(true) {
+            return;
+        }
+        let pr_file = match self.meta.files.get(i) {
+            Some(f) => crate::github::PrFile {
+                path: f.path.clone(),
+                previous_path: f.previous_path.clone(),
+                status: f.status.clone(),
+                viewer_viewed_state: f.viewer_viewed_state.clone(),
+            },
+            None => return,
+        };
+        let computed = match crate::diff::compute_diffs(
+            &self.repo_root,
+            &self.session.worktree_path,
+            &self.meta.base_sha,
+            std::slice::from_ref(&pr_file),
+        ) {
+            Ok(mut v) => v.pop(),
+            Err(e) => {
+                self.set_status(
+                    format!("Diff failed for {}: {e}", pr_file.path),
+                    StatusKind::Error,
+                );
+                None
+            }
+        };
+        if let Some(d) = computed {
+            self.diffs[i] = d;
+            crate::diff::enrich_with_orphan_context(
+                &self.repo_root,
+                &self.meta.base_sha,
+                &self.meta.head_sha,
+                std::slice::from_mut(&mut self.diffs[i]),
+                std::slice::from_ref(&self.threads_by_file[i]),
+            );
+            let wrap_width = self
+                .last_layout_width
+                .saturating_sub(PANE_CHROME_COLS)
+                .max(MIN_WRAP_WIDTH) as usize;
+            self.laid[i] = LaidOutDiff::from_file(
+                &self.diffs[i],
+                &self.threads_by_file[i],
+                wrap_width,
+                &self.expanded_threads,
+                self.session.hide_resolved,
+            );
+            self.diffs_computed[i] = true;
+            // Mode-2 cached layout is stale — drop so it rebuilds on next view.
+            self.local_laid[i] = None;
+        }
     }
 
     /// Cursor row for file `i` in the active mode.
@@ -787,13 +855,21 @@ impl ReviewState {
                     .collect()
             })
             .collect();
-        crate::diff::enrich_with_orphan_context(
-            &self.repo_root,
-            &self.meta.base_sha,
-            &self.meta.head_sha,
-            &mut self.diffs,
-            &self.threads_by_file,
-        );
+        // Re-enrich orphan context only for files whose diff has been
+        // computed. Unvisited files pick up the new threads when their diff is
+        // computed lazily.
+        for i in 0..self.diffs.len() {
+            if !self.diffs_computed.get(i).copied().unwrap_or(false) {
+                continue;
+            }
+            crate::diff::enrich_with_orphan_context(
+                &self.repo_root,
+                &self.meta.base_sha,
+                &self.meta.head_sha,
+                std::slice::from_mut(&mut self.diffs[i]),
+                std::slice::from_ref(&self.threads_by_file[i]),
+            );
+        }
         self.relayout();
         // Invalidate any cached mode-2 layouts so they pick up the new threads
         // on next render.
@@ -1236,6 +1312,7 @@ impl ReviewState {
         let i = self.list_state.selected().unwrap_or(0);
         let next = (i + 1).min(self.visible_rows.len() - 1);
         self.list_state.select(Some(next));
+        self.ensure_diff_for_selected();
         if matches!(self.diff_mode, DiffMode::HeadLocal) {
             self.ensure_local_for_current();
         }
@@ -1247,8 +1324,15 @@ impl ReviewState {
         }
         let i = self.list_state.selected().unwrap_or(0);
         self.list_state.select(Some(i.saturating_sub(1)));
+        self.ensure_diff_for_selected();
         if matches!(self.diff_mode, DiffMode::HeadLocal) {
             self.ensure_local_for_current();
+        }
+    }
+
+    fn ensure_diff_for_selected(&mut self) {
+        if let Some(idx) = self.selected_idx() {
+            self.ensure_diff_computed(idx);
         }
     }
 
@@ -1317,6 +1401,7 @@ impl ReviewState {
         if let Some(idx) = pos {
             self.list_state.select(Some(idx));
         }
+        self.ensure_diff_computed(diff_idx);
     }
 
     /// Jump to the next comment-thread row across the whole PR (wraps around).
@@ -1334,6 +1419,13 @@ impl ReviewState {
         let n = self.diffs.len();
         for offset in 0..=n {
             let file_idx = (current_file + offset) % n;
+            // Skip files with no threads — avoids waking lazy-compute on
+            // files we'd skip anyway.
+            if self.threads_by_file[file_idx].is_empty() {
+                continue;
+            }
+            // Compute the file's diff so its laid rows know about thread anchors.
+            self.ensure_diff_computed(file_idx);
             let start = if offset == 0 { current_row } else { 0 };
             let rows = &self.laid[file_idx].rows;
             if start >= rows.len() {
@@ -1366,6 +1458,10 @@ impl ReviewState {
         for offset in 0..=n {
             // Walk backwards: current file then earlier (with wrap).
             let file_idx = (current_file + n - (offset % n)) % n;
+            if self.threads_by_file[file_idx].is_empty() {
+                continue;
+            }
+            self.ensure_diff_computed(file_idx);
             let rows = &self.laid[file_idx].rows;
             let end = if offset == 0 {
                 current_row.min(rows.len())
@@ -2118,7 +2214,8 @@ impl ReviewState {
             cursors: HashMap::new(),
         };
         let (status_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        Self::new(
+        let n = diffs.len();
+        let mut state = Self::new(
             meta,
             diffs,
             threads,
@@ -2128,7 +2225,11 @@ impl ReviewState {
             String::new(),
             String::new(),
             status_tx,
-        )
+        );
+        // Tests pass pre-built FileDiffs with hunks; mark them all as computed
+        // so subsequent navigation doesn't try to shell to git on dummy paths.
+        state.diffs_computed = vec![true; n];
+        state
     }
 
     /// Test-only accessor: index into `diffs` for the file under the
@@ -2437,6 +2538,16 @@ mod tests {
             super::previous_path_label("totally/unrelated.txt", "elsewhere.txt"),
             "totally/unrelated.txt"
         );
+    }
+
+    #[test]
+    fn ensure_diff_computed_skips_already_computed() {
+        // Sanity check: for_test marks all diffs as computed, so calling
+        // ensure_diff_computed again must not panic / shell to git on a
+        // bogus worktree path. This is the contract that next_file relies on.
+        let mut s = state(&["a.rs", "b.rs"], vec![]);
+        s.ensure_diff_computed(0);
+        s.ensure_diff_computed(1);
     }
 
     #[test]

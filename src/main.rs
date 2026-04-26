@@ -159,9 +159,10 @@ async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
     };
     session.save(&repo_root)?;
 
-    let diffs = diff::compute_diffs(&repo_root, &desired_path, &meta.base_sha, &meta.files)?;
-
     if json {
+        // JSON export still does the full eager compute — `--json` is a
+        // batch-export flag, not the interactive path.
+        let diffs = diff::compute_diffs(&repo_root, &desired_path, &meta.base_sha, &meta.files)?;
         let output = serde_json::json!({
             "pr_number": pr_number,
             "title": meta.title,
@@ -177,9 +178,27 @@ async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
         return Ok(());
     }
 
+    // Interactive path: stub each FileDiff (path + previous_path only) and let
+    // ReviewState compute hunks lazily on file-switch. Eliminates the
+    // open-pr stall on big PRs.
+    let diffs = stub_diffs(&meta.files);
+
     tui::run(
         meta, diffs, threads, session, repo_root, token, owner, repo_name,
     )
+}
+
+fn stub_diffs(files: &[github::PrFile]) -> Vec<diff::FileDiff> {
+    files
+        .iter()
+        .map(|f| diff::FileDiff {
+            path: f.path.clone(),
+            previous_path: f.previous_path.clone(),
+            hunks: Vec::new(),
+            added: 0,
+            removed: 0,
+        })
+        .collect()
 }
 
 fn do_cleanup(repo_root: &std::path::Path, pr_number: u64) -> Result<()> {

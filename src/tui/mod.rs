@@ -208,7 +208,18 @@ fn open_pr_review(
     };
     session.save(repo_root)?;
 
-    let diffs = crate::diff::compute_diffs(repo_root, &desired_path, &meta.base_sha, &meta.files)?;
+    // Lazy: ReviewState computes per-file diffs on file-switch.
+    let diffs: Vec<crate::diff::FileDiff> = meta
+        .files
+        .iter()
+        .map(|f| crate::diff::FileDiff {
+            path: f.path.clone(),
+            previous_path: f.previous_path.clone(),
+            hunks: Vec::new(),
+            added: 0,
+            removed: 0,
+        })
+        .collect();
 
     // Reuse the dashboard's terminal — the review event loop handles its own
     // editor handoffs internally.
