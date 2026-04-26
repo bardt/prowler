@@ -50,17 +50,14 @@ pub fn highlighter() -> &'static Highlighter {
     HL.get_or_init(Highlighter::new)
 }
 
-/// Convert syntect-styled segments to ratatui spans. The `bg_override`
-/// parameter is no longer used (kept for callsite compatibility) — diff
-/// rows now distinguish themselves via the leading marker and the foreground
-/// color, not a row tint, so the user's terminal scheme stays in charge.
-///
-/// Foreground colors come from a syntect theme baked at compile time; we
-/// quantize each RGB to the nearest of the 16 ANSI named colors so the
-/// output respects the user's terminal palette.
+/// Convert syntect-styled segments to ratatui spans, applying an optional
+/// row-wide background. Foreground colors are quantized to the nearest of
+/// the 16 ANSI named colors so the output respects the user's terminal
+/// palette; the optional `bg_override` should be a named color too (Green,
+/// Red, Blue, …) so the whole row stays terminal-theme-friendly.
 pub fn to_spans<'a>(
     segments: &[(SynStyle, &'a str)],
-    _bg_override: Option<Color>,
+    bg_override: Option<Color>,
 ) -> Vec<Span<'a>> {
     segments
         .iter()
@@ -70,6 +67,9 @@ pub fn to_spans<'a>(
                 syn.foreground.g,
                 syn.foreground.b,
             ));
+            if let Some(bg) = bg_override {
+                style = style.bg(bg);
+            }
             if syn.font_style.contains(FontStyle::BOLD) {
                 style = style.add_modifier(Modifier::BOLD);
             }
