@@ -29,7 +29,6 @@ pub enum Focus {
 pub enum StatusKind {
     Success,
     Error,
-    #[allow(dead_code)] // Reserved for future "in-progress" / informational notices.
     Info,
 }
 
@@ -533,6 +532,20 @@ impl ReviewState {
             &self.threads_by_file,
         );
         self.relayout();
+    }
+
+    /// Total inline comments across all review threads. Used by the background
+    /// poller to detect "new activity" without re-rendering everything.
+    pub fn total_inline_comments(&self) -> usize {
+        self.threads_by_file
+            .iter()
+            .flat_map(|t| t.iter())
+            .map(|t| t.comments.len())
+            .sum()
+    }
+
+    pub fn total_threads(&self) -> usize {
+        self.threads_by_file.iter().map(|t| t.len()).sum()
     }
 
     pub fn pr_number(&self) -> u64 {

@@ -221,6 +221,34 @@ so the user knows to retry.
 
 ---
 
+## Background poller (2026-04-26)
+
+**Choice:** Spawn a Tokio task on `event_loop` entry that polls `fetch_pr`
+every 60 s and sends a status row notification when the thread or comment
+count changes. The poller is RAII-tied to the review session via an
+`AbortOnDrop` guard, so quitting back to the dashboard kills it.
+
+**Notify, don't apply.** The poller never auto-runs `apply_refresh`. If we
+did, it could shift the cursor or rows underneath the user mid-keystroke
+(imagine they're typing `X X` to delete a comment and a new thread shows
+up between presses). The notification reads "+2 threads, +1 comment on
+GitHub — F5 to refresh", and `F5` is the existing manual refresh.
+
+**Silent on errors.** Network failures during polling are swallowed (no
+status row spam). The next poll tries again. The user can always F5
+manually to surface a real error path.
+
+**60 s interval:** balances "fresh enough to feel live" against API rate
+limits. GitHub's GraphQL allows 5000 points/hour for authenticated
+requests; one fetch_pr call costs ~10 points → 60s polling = 600/h,
+well under the limit even with multiple PRs open.
+
+**Future:** when the poller detects head_sha movement (not just comment
+deltas), it'll be the right place to surface "PR has new commits" too.
+Today F5 already handles that, so we don't duplicate.
+
+---
+
 ## UX polish pass (2026-04-26)
 
 Three small, high-impact UX fixes shipped alongside M12/M13:

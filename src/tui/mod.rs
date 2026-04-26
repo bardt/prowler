@@ -232,8 +232,30 @@ fn event_loop(
 ) -> Result<()> {
     let (status_tx, mut status_rx) = mpsc::unbounded_channel::<review::StatusMessage>();
     let mut state = review::ReviewState::new(
-        meta, diffs, threads, session, repo_root, token, owner, repo, status_tx,
+        meta,
+        diffs,
+        threads,
+        session,
+        repo_root,
+        token.clone(),
+        owner.clone(),
+        repo.clone(),
+        status_tx.clone(),
     );
+
+    // Background comment poller: every BACKGROUND_POLL_INTERVAL_SECS, fetch
+    // the PR and notify (via the status mpsc) when the thread or comment
+    // count has changed. Does NOT auto-apply the refresh — user presses F5
+    // to actually pull, so cursor / scroll / pending edits aren't disturbed.
+    let _poll_guard = AbortOnDrop(spawn_poller(
+        token.clone(),
+        owner.clone(),
+        repo.clone(),
+        state.pr_number(),
+        state.total_threads(),
+        state.total_inline_comments(),
+        status_tx,
+    ));
 
     loop {
         // Drain any pending background status messages (e.g. async viewed-state
@@ -740,6 +762,110 @@ fn parse_submit_buffer(text: &str) -> Result<(String, String)> {
     }
     let body = iter.copied().collect::<Vec<_>>().join("\n").trim().to_owned();
     Ok((verdict, body))
+}
+
+const BACKGROUND_POLL_INTERVAL_SECS: u64 = 60;
+
+/// RAII wrapper that aborts a Tokio task when it goes out of scope. Used to
+/// ensure the background comment poller doesn't outlive the review session
+/// (e.g. when the user `q`-quits back to the dashboard).
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+fn spawn_poller(
+    token: String,
+    owner: String,
+    repo: String,
+    pr_number: u64,
+    initial_threads: usize,
+    initial_comments: usize,
+    status_tx: tokio::sync::mpsc::UnboundedSender<review::StatusMessage>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut last_threads = initial_threads;
+        let mut last_comments = initial_comments;
+        loop {
+            tokio::time::sleep(Duration::from_secs(BACKGROUND_POLL_INTERVAL_SECS)).await;
+            let Ok((_meta, threads)) =
+                crate::github::fetch_pr(&token, &owner, &repo, pr_number).await
+            else {
+                // Don't surface intermittent network errors — the foreground
+                // F5 path is the source of truth for failure reporting.
+                continue;
+            };
+            let cur_threads = threads.len();
+            let cur_comments: usize = threads.iter().map(|t| t.comments.len()).sum();
+            if cur_threads != last_threads || cur_comments != last_comments {
+                let delta_threads = cur_threads as i64 - last_threads as i64;
+                let delta_comments = cur_comments as i64 - last_comments as i64;
+                let text = describe_delta(delta_threads, delta_comments);
+                if status_tx
+                    .send(review::StatusMessage {
+                        text,
+                        kind: review::StatusKind::Info,
+                    })
+                    .is_err()
+                {
+                    return; // event loop dropped the receiver — quit polling
+                }
+                last_threads = cur_threads;
+                last_comments = cur_comments;
+            }
+        }
+    })
+}
+
+fn describe_delta(threads: i64, comments: i64) -> String {
+    let mut parts = Vec::new();
+    if threads > 0 {
+        parts.push(format!("+{threads} thread{}", if threads == 1 { "" } else { "s" }));
+    } else if threads < 0 {
+        parts.push(format!("{threads} thread{}", if threads == -1 { "" } else { "s" }));
+    }
+    if comments > 0 {
+        parts.push(format!(
+            "+{comments} comment{}",
+            if comments == 1 { "" } else { "s" }
+        ));
+    } else if comments < 0 {
+        parts.push(format!(
+            "{comments} comment{}",
+            if comments == -1 { "" } else { "s" }
+        ));
+    }
+    if parts.is_empty() {
+        "Activity on GitHub — F5 to refresh".to_owned()
+    } else {
+        format!("{} on GitHub — F5 to refresh", parts.join(", "))
+    }
+}
+
+#[cfg(test)]
+mod poller_tests {
+    use super::describe_delta;
+
+    #[test]
+    fn delta_text_singular_and_plural() {
+        assert!(describe_delta(0, 1).contains("+1 comment "));
+        assert!(describe_delta(0, 3).contains("+3 comments"));
+        assert!(describe_delta(1, 0).contains("+1 thread "));
+        assert!(describe_delta(2, 5).starts_with("+2 threads, +5 comments"));
+    }
+
+    #[test]
+    fn delta_text_handles_negative() {
+        assert!(describe_delta(-1, 0).contains("-1 thread "));
+        assert!(describe_delta(0, -2).contains("-2 comments"));
+    }
+
+    #[test]
+    fn delta_text_empty_falls_back_to_generic() {
+        assert!(describe_delta(0, 0).starts_with("Activity"));
+    }
 }
 
 fn log_post_error(line: &str) {
