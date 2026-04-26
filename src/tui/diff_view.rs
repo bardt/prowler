@@ -10,10 +10,10 @@ use crate::diff::{DiffLine, FileDiff};
 use crate::github::{CommentSide, CommentThread};
 use crate::tui::syntax;
 
-const BG_ADDED: Color = Color::Rgb(20, 50, 25);
-const BG_REMOVED: Color = Color::Rgb(60, 25, 25);
-const BG_MOVED: Color = Color::Rgb(20, 35, 55);
-const BG_SUGGESTION: Color = Color::Rgb(160, 220, 160);
+// Diff rows distinguish themselves via the leading marker color (green `+`,
+// red `-`, blue `~`) instead of a row-wide background tint, so the user's
+// terminal palette stays in charge. Suggestion blocks use REVERSED on the
+// marker for emphasis (terminal-theme-friendly).
 
 #[derive(Clone)]
 pub enum Cell {
@@ -432,9 +432,12 @@ pub fn render_pane(
                         .unwrap_or(false);
                     let line = with_gutter(render_cell(cell, syntax_ref), active);
                     if in_selection {
+                        // Use REVERSED so the selection respects the user's
+                        // terminal palette (light or dark) instead of a fixed
+                        // RGB tint.
                         let mut spans = line.spans;
                         for span in &mut spans {
-                            span.style = span.style.bg(Color::Rgb(60, 50, 30));
+                            span.style = span.style.add_modifier(Modifier::REVERSED);
                         }
                         Line::from(spans)
                     } else {
@@ -492,9 +495,9 @@ fn render_cell<'a>(cell: &'a Cell, syntax: &syntect::parsing::SyntaxReference) -
             spans.extend(syntax::to_spans(&segs, None));
             Line::from(spans)
         }
-        Cell::Added(t) => row_with_marker("+ ", t, BG_ADDED, syntax),
-        Cell::Removed(t) => row_with_marker("- ", t, BG_REMOVED, syntax),
-        Cell::Moved(t) => row_with_marker("~ ", t, BG_MOVED, syntax),
+        Cell::Added(t) => row_with_marker("+ ", t, Color::Green, syntax),
+        Cell::Removed(t) => row_with_marker("- ", t, Color::Red, syntax),
+        Cell::Moved(t) => row_with_marker("~ ", t, Color::Blue, syntax),
         Cell::CommentHeader {
             text,
             is_root,
@@ -544,11 +547,15 @@ fn render_cell<'a>(cell: &'a Cell, syntax: &syntect::parsing::SyntaxReference) -
         }
         Cell::CommentBody { text, in_suggestion } => {
             if *in_suggestion {
+                // Use REVERSED so the highlight follows the user's terminal
+                // theme (light or dark) instead of a fixed RGB tint.
                 Line::from(vec![
                     Span::styled("\u{2502} ", Style::default().fg(Color::Yellow)),
                     Span::styled(
                         text.clone(),
-                        Style::default().fg(Color::Black).bg(BG_SUGGESTION),
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
                     ),
                 ])
             } else {
@@ -613,13 +620,18 @@ fn render_cell<'a>(cell: &'a Cell, syntax: &syntect::parsing::SyntaxReference) -
 fn row_with_marker<'a>(
     marker: &'static str,
     text: &'a str,
-    bg: Color,
+    marker_fg: Color,
     syntax: &syntect::parsing::SyntaxReference,
 ) -> Line<'a> {
     let syn = syntax::highlighter();
     let segs = syn.highlight_line(syntax, strip_newline(text));
-    let mut spans = vec![Span::styled(marker, Style::default().bg(bg))];
-    spans.extend(syntax::to_spans(&segs, Some(bg)));
+    let mut spans = vec![Span::styled(
+        marker,
+        Style::default()
+            .fg(marker_fg)
+            .add_modifier(Modifier::BOLD),
+    )];
+    spans.extend(syntax::to_spans(&segs, None));
     Line::from(spans)
 }
 
