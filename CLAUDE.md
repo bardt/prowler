@@ -284,7 +284,8 @@ Replaces hard-coded values:
 - `review.confirm_delete_ttl_secs` — `X X` arming window (default 3).
 
 Loaded on startup. Future entries (theme, key remap) layer onto the
-same struct.
+same struct. In v1 because the maintainer wants to experiment with
+defaults without recompiling.
 
 **M18 scope:** Final 1.0 polish pass.
 
@@ -329,6 +330,24 @@ new milestone.
 
 ## Backlog
 
+- **Cursor sync between BaseHead and HeadLocal modes** *(blocked on
+  config/prefs to make it toggleable)*. Today each mode keeps its own
+  cursor; switching `L` returns you to where you were in the new mode.
+  Alternative: sync the cursor by HEAD line so toggling lands on the
+  corresponding row in the target mode. Caveats:
+  - Removed-only rows (mode 1) and Added-only rows (mode 2) have no
+    HEAD-line counterpart — fall back to the nearest neighbouring row
+    that has one.
+  - Comment-thread rows have no `head_line` directly — fall back to
+    `thread.line`.
+  - HEAD line may not exist in the target mode at all (e.g. you didn't
+    edit the line locally) — leave the target cursor unchanged, or
+    surface a hint.
+  - Synthetic hunks in mode 1 don't have counterparts in mode 2.
+  - Toggling should clear any active `V`-selection (anchor row index
+    won't translate).
+  - Behaviour change vs current; ship as a config toggle so users can
+    pick continuity-vs-independence.
 - **Mockable GitHub client for end-to-end tests.** The headless harness
   (state + render + event layers) is in place — `apply_key` is pure,
   `ReviewState::for_test` builds a state from fixtures, and `TestBackend`
