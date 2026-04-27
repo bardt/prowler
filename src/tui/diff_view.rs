@@ -427,6 +427,12 @@ fn parse_hunk_header(header: &str) -> Option<(u32, u32)> {
     Some((old_start, new_start))
 }
 
+/// Fixed width of the line-number gutter (digits + 1-space separator).
+/// Five chars covers files up to 9 999 lines; bigger files spill onto the
+/// content but the diff still renders cleanly.
+pub const LINE_NUMBER_WIDTH: usize = 4;
+pub const LINE_NUMBER_GUTTER: usize = LINE_NUMBER_WIDTH + 1;
+
 pub fn render_pane(
     frame: &mut Frame,
     area: Rect,
@@ -464,11 +470,18 @@ pub fn render_pane(
                         Side::Base => &row.base,
                         Side::Head => &row.head,
                     };
+                    let line_no = match side {
+                        Side::Base => row.base_line,
+                        Side::Head => row.head_line,
+                    };
                     let active = Some(idx) == cursor;
                     let in_selection = selection
                         .map(|(lo, hi)| idx >= lo && idx <= hi)
                         .unwrap_or(false);
-                    let line = with_gutter(render_cell(cell, syntax_ref), active);
+                    let line = with_gutter(
+                        with_line_number(render_cell(cell, syntax_ref), line_no),
+                        active,
+                    );
                     if in_selection {
                         let mut spans = line.spans;
                         for span in &mut spans {
@@ -485,6 +498,20 @@ pub fn render_pane(
 
     let para = Paragraph::new(lines).block(block).scroll((scroll, hscroll));
     frame.render_widget(para, area);
+}
+
+/// Prepend the line-number gutter to a row line. Lines without an anchor
+/// (hunk headers, comment rows, empty cells) get a blank gutter so columns
+/// stay aligned with anchored rows.
+fn with_line_number<'a>(line: Line<'a>, line_no: Option<u32>) -> Line<'a> {
+    let label = match line_no {
+        Some(n) => format!("{n:>w$} ", w = LINE_NUMBER_WIDTH),
+        None => " ".repeat(LINE_NUMBER_GUTTER),
+    };
+    let mut spans = Vec::with_capacity(line.spans.len() + 1);
+    spans.push(Span::styled(label, Style::default().fg(Color::DarkGray)));
+    spans.extend(line.spans);
+    Line::from(spans)
 }
 
 fn with_gutter(line: Line<'_>, active: bool) -> Line<'_> {

@@ -167,8 +167,9 @@ pub struct Selection {
 /// Default wrap width used before we've measured the actual pane (e.g. on first paint).
 const DEFAULT_WRAP_WIDTH: u16 = 80;
 
-/// Columns consumed by per-row chrome inside a pane: 1 gutter + `│ ` (2) + 2 borders.
-const PANE_CHROME_COLS: u16 = 5;
+/// Columns consumed by per-row chrome inside a pane: 1 cursor gutter + line-
+/// number gutter (5) + `│ ` (2) + 2 borders.
+const PANE_CHROME_COLS: u16 = 5 + crate::tui::diff_view::LINE_NUMBER_GUTTER as u16;
 const MIN_WRAP_WIDTH: u16 = 20;
 
 fn build_layout(
