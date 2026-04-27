@@ -329,6 +329,7 @@ fn event_loop(
             KeyCode::Char('M') => edit_own_comment(terminal, &mut state)?,
             KeyCode::Char('X') => delete_own_comment(&mut state)?,
             KeyCode::Char('a') => apply_suggestion(&mut state)?,
+            KeyCode::Char('Y') => copy_worktree_path(&mut state)?,
             other => {
                 if review::apply_key(&mut state, other) {
                     return Ok(());
@@ -502,6 +503,19 @@ fn delete_own_comment(state: &mut review::ReviewState) -> Result<()> {
             log_post_error(&format!("[FAIL] delete comment {comment_id}: {e:#}\n"));
             state.set_status(format!("Delete failed: {e}"), review::StatusKind::Error);
         }
+    }
+    Ok(())
+}
+
+fn copy_worktree_path(state: &mut review::ReviewState) -> Result<()> {
+    let path = state.worktree_path().to_path_buf();
+    let path_str = path.to_string_lossy().into_owned();
+    match crate::clipboard::copy(&path_str) {
+        Ok(tool) => state.set_status(
+            format!("Copied {path_str} ({tool})"),
+            review::StatusKind::Success,
+        ),
+        Err(e) => state.set_status(format!("Copy failed: {e:#}"), review::StatusKind::Error),
     }
     Ok(())
 }

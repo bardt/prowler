@@ -158,6 +158,7 @@ position in each.
 | `c` (mode 2 + `V` selection) | Post selection as ` ```suggestion ` comment |
 | `F5` / `Ctrl+R` | Re-fetch PR from GitHub (comments, viewed states) |
 | `S` | Submit review (verdict + summary) |
+| `Y` | Copy worktree path to clipboard |
 | `q` | Back to dashboard |
 
 ### Dashboard view
@@ -409,27 +410,6 @@ new milestone.
     won't translate).
   - Behaviour change vs current; ship as a config toggle so users can
     pick continuity-vs-independence.
-- **Open a terminal in the current worktree** (e.g. `T`). Spawn a new
-  terminal tab/window cd'd into the worktree path of the active PR so
-  the user can run tests, lints, or arbitrary commands without
-  leaving the review flow. Keeps the TUI alive in the original
-  terminal.
-  - macOS: AppleScript / `open -a Terminal` / iTerm-specific scripts;
-    detect the terminal app from `$TERM_PROGRAM`. Wezterm, Kitty,
-    Alacritty, Ghostty all support `--cwd` flags or socket APIs.
-  - Linux: best-effort via `$TERMINAL` or fall back to
-    `gnome-terminal --working-directory` / `konsole --workdir` /
-    `kitty @ launch --cwd` / etc.
-  - Make the launch command configurable in
-    `~/.config/prowler/config.toml`
-    (`review.terminal_cmd = "wezterm cli spawn --cwd {path}"` with
-    `{path}` substitution) so users opt into whatever they actually
-    use. Auto-detect for the common cases; fall back to a clear
-    error toast.
-  - For LOCAL mode, target the worktree (where edits happen). For
-    BASE-side use, possibly offer a separate binding for the base
-    worktree (`session.base_worktree_path`).
-  - Status row should report success ("Opened terminal at /tmp/…").
 - **Mockable GitHub client for end-to-end tests.** The headless harness
   (state + render + event layers) is in place — `apply_key` is pure,
   `ReviewState::for_test` builds a state from fixtures, and `TestBackend`

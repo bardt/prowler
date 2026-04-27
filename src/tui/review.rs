@@ -1146,6 +1146,12 @@ impl ReviewState {
         &self.meta.base_sha
     }
 
+    /// Path to the PR's worktree on disk. Used by `T` to spawn a terminal
+    /// at that location and by editor handoff.
+    pub fn worktree_path(&self) -> &Path {
+        &self.session.worktree_path
+    }
+
     pub fn pending_review_id(&self) -> Option<&str> {
         self.meta.pending_review_id.as_deref()
     }
@@ -2007,6 +2013,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
                     "re-fetch PR from GitHub (comments, viewed states)",
                 ),
                 ("S", "submit review (verdict + summary)"),
+                ("Y", "copy worktree path to clipboard"),
                 ("?", "toggle this help"),
                 ("D", "toggle PR description panel"),
                 ("C", "toggle Conversation panel (all threads + jump)"),

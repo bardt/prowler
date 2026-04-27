@@ -1,4 +1,5 @@
 mod auth;
+mod clipboard;
 mod config;
 mod diff;
 mod git;
