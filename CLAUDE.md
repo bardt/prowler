@@ -423,6 +423,66 @@ new milestone.
   returning canned responses. Test handlers like `post_comment` /
   `submit_review` then become drivable end-to-end.
 
+## Interaction polish — pending
+
+Daily-use friction points spotted in a 2026-04-27 keymap review. Pick
+off one at a time; cross out as shipped.
+
+1. **Refresh keys are backwards.** Today `R` refreshes only the local
+   diff of one file; `F5` / `Ctrl+R` does the GitHub refetch. Swap:
+   `R` = refetch from GitHub, demote local-diff refresh to `Ctrl+R`
+   or remove (full refetch covers it).
+
+2. **`v` (mark viewed) is global and case-collides with `V`.** A
+   stray lowercase while aiming for `V` (visual select) silently marks
+   the file viewed. Gate `v` to `Focus::Files` only — symmetric with
+   how `J` / `K` already require Diff focus.
+
+3. **`1`/`2`/`3`/`4` direct-jump help is stale.** `Local` is no longer
+   a panel — it's a mode toggle (`L`). Drop the `4` row and trim the
+   help-overlay copy.
+
+4. **`e` / `E` breaks the capital-letter convention.** Lowercase /
+   capital elsewhere means "stronger" or "scope shift"; here it's
+   "the other side". Document the exception in the help overlay
+   ("`e` = HEAD, `E` = BASE") or split into `e` + `gE` chord.
+
+5. **`o` (resolve) vs `O` (open URL) is a dangerous mistype.**
+   Resolution flips publish state. Move open-in-browser off `O` —
+   `Ctrl+O` or a `gO` chord. Keep `o` for resolve.
+
+6. **`r` / `R` cluster is mildly confusing.** Less risky than #5; both
+   land in a "comms" mental category after #1 ships. Flag only.
+
+7. **`X` `X` is the only multi-step destructive action.** Either
+   extend the 3-second arming pattern to other irreversible posts
+   (Submit?), or document why delete is the only one that needs it.
+   Lean toward extending.
+
+8. **`Enter` is overloaded across five contexts** (fold folder, drill
+   in, toggle thread, jump from conversation, commit filter). Already
+   disambiguated by focus + overlay, but no escape hatch. Cleaner
+   split: `Enter` = drill / activate everywhere, `Space` = thread
+   expand (today `Space` already toggles folders).
+
+9. **`D` and `C` are two near-identical full-screen overlays.** Cover
+   overlapping mental territory. Merge into one overlay with `Tab` to
+   switch sub-tabs (description / threads); frees a capital. We chose
+   two for M19 simplicity — worth revisiting.
+
+10. **No `g` / `G` (first / last) inside the diff.** Works in dashboard
+    and Conversation overlay but not in the diff panes. Adding them to
+    skip to first / last hunk is one keybinding and matches vim muscle
+    memory.
+
+11. **No half-page / page diff scroll.** Heavy users mash `j` or `]`.
+    Add `Ctrl+d` / `Ctrl+u` (vim) and / or `PageUp` / `PageDown`.
+
+12. **`/` filter is one-shot and Files-only.** Re-pressing `/` while a
+    query is active doesn't extend it; can't filter threads in the
+    Conversation overlay either. Generalize: `/` filters whatever list
+    is focused (Files panel or Conversation list).
+
 ## Conventions
 
 - No `.unwrap()` in library code — use `?` and `anyhow::Result`
