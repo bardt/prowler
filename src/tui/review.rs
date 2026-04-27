@@ -127,6 +127,15 @@ pub struct ReviewState {
     /// When true, the body area is replaced by a categorized keymap. Toggled
     /// with `?`. Wins over `show_description` when both are set.
     show_help: bool,
+    /// When true, the body area is replaced by a list of every inline review
+    /// thread on the PR. `Enter` on a row jumps to the thread's diff anchor
+    /// and closes the overlay. Toggled with `C`.
+    show_conversation: bool,
+    /// Selected row in the Conversation overlay (index into the filtered,
+    /// sorted thread list). Clamped on `apply_refresh`. Scroll is delegated
+    /// to ratatui's `List` widget — `ListState::select` keeps the cursor in
+    /// view automatically.
+    conversation_cursor: usize,
     /// Two-step delete confirmation: first `X` press records the comment id and
     /// timestamp; a second `X` press on the same comment within `STATUS_TTL`
     /// triggers the actual delete.
@@ -273,6 +282,8 @@ impl ReviewState {
             show_description: false,
             description_scroll: 0,
             show_help: false,
+            show_conversation: false,
+            conversation_cursor: 0,
             pending_delete: None,
             file_filter: String::new(),
             file_filter_editing: false,
@@ -286,9 +297,14 @@ impl ReviewState {
         state
     }
 
-    /// Toggle the full-width PR description / conversation page.
+    /// Toggle the full-width keymap help overlay.
     pub fn toggle_help(&mut self) {
-        self.show_help = !self.show_help;
+        let opening = !self.show_help;
+        self.show_help = opening;
+        if opening {
+            self.show_description = false;
+            self.show_conversation = false;
+        }
     }
 
     /// Begin a multi-line selection at the cursor row. No-op when the cursor
@@ -371,8 +387,103 @@ impl ReviewState {
     }
 
     pub fn toggle_description(&mut self) {
-        self.show_description = !self.show_description;
+        let opening = !self.show_description;
+        self.show_description = opening;
         self.description_scroll = 0;
+        if opening {
+            self.show_help = false;
+            self.show_conversation = false;
+        }
+    }
+
+    /// Toggle the full-width Conversation overlay (list of every inline
+    /// thread). Mutually exclusive with help / description.
+    pub fn toggle_conversation(&mut self) {
+        let opening = !self.show_conversation;
+        self.show_conversation = opening;
+        if opening {
+            self.show_help = false;
+            self.show_description = false;
+            self.conversation_cursor = 0;
+        }
+    }
+
+    /// All inline threads, filtered by `hide_resolved`, sorted by `(path, line)`.
+    /// Returns a flat list of references — cheap, used for the overlay only.
+    pub fn conversation_threads(&self) -> Vec<&CommentThread> {
+        let mut out: Vec<&CommentThread> = self
+            .threads_by_file
+            .iter()
+            .flat_map(|tt| tt.iter())
+            .filter(|t| !(self.session.hide_resolved && t.is_resolved))
+            .collect();
+        out.sort_by(|a, b| a.path.cmp(&b.path).then(a.line.cmp(&b.line)));
+        out
+    }
+
+    fn conversation_move(&mut self, delta: i32) {
+        let len = self.conversation_threads().len();
+        if len == 0 {
+            return;
+        }
+        let last = (len - 1) as i32;
+        let cur = self.conversation_cursor as i32;
+        self.conversation_cursor = (cur + delta).clamp(0, last) as usize;
+    }
+
+    pub fn conversation_first(&mut self) {
+        self.conversation_cursor = 0;
+    }
+
+    pub fn conversation_last(&mut self) {
+        let len = self.conversation_threads().len();
+        if len == 0 {
+            return;
+        }
+        self.conversation_cursor = len - 1;
+    }
+
+    /// `Enter` on a Conversation row: jump to the thread's diff anchor and
+    /// close the overlay. No-op when the cursor is past the end (e.g. list
+    /// shrank after a refresh and the clamp hasn't run yet).
+    pub fn jump_to_thread_under_cursor(&mut self) {
+        let id = match self.conversation_threads().get(self.conversation_cursor) {
+            Some(t) => t.id.clone(),
+            None => return,
+        };
+        self.jump_to_thread_id(&id);
+    }
+
+    /// Jump the diff cursor to the row carrying `thread_id` and close the
+    /// Conversation overlay. Mirrors `goto_next_thread` (review.rs:1444) — if
+    /// the row exists in any file's laid layout, select that file and land
+    /// the cursor on it.
+    pub fn jump_to_thread_id(&mut self, thread_id: &str) {
+        let target = self
+            .threads_by_file
+            .iter()
+            .position(|tt| tt.iter().any(|t| t.id == thread_id));
+        let Some(file_idx) = target else {
+            return;
+        };
+        self.ensure_diff_computed(file_idx);
+        let row_idx = self.laid[file_idx]
+            .rows
+            .iter()
+            .position(|r| r.thread_id.as_deref() == Some(thread_id));
+        if let Some(row) = row_idx {
+            self.select_file(file_idx);
+            // Force mode 1 — threads are anchored in the BaseHead layout.
+            // Mode-2 layout's row indices don't line up with what we just
+            // looked up.
+            self.diff_mode = DiffMode::BaseHead;
+            self.cursor[file_idx] = row as u16;
+            self.ensure_cursor_visible(file_idx);
+            if self.focus == Focus::Files {
+                self.focus = Focus::Head;
+            }
+        }
+        self.show_conversation = false;
     }
 
     /// Re-lay-out diffs with a new wrap width. Called by `render_body` when the
@@ -483,10 +594,10 @@ impl ReviewState {
             },
             None => return,
         };
-        let computed = match crate::diff::compute_diffs(
+        let computed = match crate::diff::compute_pr_diffs(
             &self.repo_root,
-            &self.session.worktree_path,
             &self.meta.base_sha,
+            &self.meta.head_sha,
             std::slice::from_ref(&pr_file),
         ) {
             Ok(mut v) => v.pop(),
@@ -687,10 +798,10 @@ impl ReviewState {
                 status: "modified".into(),
                 viewer_viewed_state: String::new(),
             };
-            match crate::diff::compute_diffs(
+            match crate::diff::compute_pr_diffs(
                 &self.repo_root,
-                &self.session.worktree_path,
                 &self.meta.base_sha,
+                &self.meta.head_sha,
                 std::slice::from_ref(&pr_file),
             ) {
                 Ok(mut v) => {
@@ -708,17 +819,18 @@ impl ReviewState {
     }
 
     fn compute_local_for(&mut self, file_idx: usize) {
-        // Constructs a single PrFile so we can reuse `diff::compute_diffs` to
-        // produce a HEAD → worktree diff. status="modified" works for the
-        // common case; locally-added or locally-deleted files render as a full
-        // additions/removals diff respectively. Acceptable for v1.
+        // Build a single-file PrFile and run the head→worktree diff. The
+        // resulting FileDiff carries any uncommitted edits the user has made
+        // on top of the PR's HEAD. status="modified" is acceptable here —
+        // locally-added or locally-deleted files render as a full
+        // additions/removals diff respectively.
         let pr_file = crate::github::PrFile {
             path: self.diffs[file_idx].path.clone(),
             previous_path: None,
             status: "modified".into(),
             viewer_viewed_state: String::new(),
         };
-        let diff = match crate::diff::compute_diffs(
+        let diff = match crate::diff::compute_local_diffs(
             &self.repo_root,
             &self.session.worktree_path,
             &self.meta.head_sha,
@@ -858,6 +970,14 @@ impl ReviewState {
             }
         }
         self.set_threads(threads);
+        // Conversation overlay's selected row may now be past the end if the
+        // refresh dropped threads (resolve, delete, hide-resolved race).
+        let len = self.conversation_threads().len();
+        if len == 0 {
+            self.conversation_cursor = 0;
+        } else if self.conversation_cursor >= len {
+            self.conversation_cursor = len - 1;
+        }
     }
 
     /// Replace threads and rebuild the laid-out diff. Cursor and scroll offsets are
@@ -1318,6 +1438,10 @@ impl ReviewState {
     }
 
     pub fn move_down(&mut self) {
+        if self.show_conversation {
+            self.conversation_move(1);
+            return;
+        }
         if self.show_description {
             self.description_scroll = self.description_scroll.saturating_add(1);
             return;
@@ -1329,6 +1453,10 @@ impl ReviewState {
     }
 
     pub fn move_up(&mut self) {
+        if self.show_conversation {
+            self.conversation_move(-1);
+            return;
+        }
         if self.show_description {
             self.description_scroll = self.description_scroll.saturating_sub(1);
             return;
@@ -1641,15 +1769,19 @@ pub fn apply_key(state: &mut ReviewState, key: KeyCode) -> bool {
         KeyCode::Char('R') => state.refresh_local(),
         KeyCode::Char('?') => state.toggle_help(),
         KeyCode::Char('D') => state.toggle_description(),
+        KeyCode::Char('C') => state.toggle_conversation(),
         KeyCode::Char('H') => state.toggle_hide_resolved(),
         KeyCode::Char('V') => state.start_selection(),
         KeyCode::Esc => {
             state.show_help = false;
             state.show_description = false;
+            state.show_conversation = false;
             state.clear_selection();
         }
         KeyCode::Char('j') | KeyCode::Down => state.move_down(),
         KeyCode::Char('k') | KeyCode::Up => state.move_up(),
+        KeyCode::Char('g') if state.show_conversation => state.conversation_first(),
+        KeyCode::Char('G') if state.show_conversation => state.conversation_last(),
         KeyCode::Left => state.scroll_left(),
         KeyCode::Right => state.scroll_right(),
         KeyCode::Char(']') => state.next_hunk(),
@@ -1657,6 +1789,7 @@ pub fn apply_key(state: &mut ReviewState, key: KeyCode) -> bool {
         KeyCode::Char('v') => state.toggle_viewed(),
         KeyCode::Char('s') => state.toggle_skipped(),
         KeyCode::Char(' ') => state.toggle_folder(),
+        KeyCode::Enter if state.show_conversation => state.jump_to_thread_under_cursor(),
         KeyCode::Enter => match state.focus {
             // Files panel: Enter folds/unfolds the folder under the cursor.
             Focus::Files if state.cursor_on_folder() => state.toggle_folder(),
@@ -1684,6 +1817,8 @@ pub fn render(frame: &mut Frame, state: &mut ReviewState) {
     render_header(frame, outer[0], state);
     if state.show_help {
         render_help(frame, outer[1]);
+    } else if state.show_conversation {
+        render_conversation(frame, outer[1], state);
     } else if state.show_description {
         render_description(frame, outer[1], state);
     } else {
@@ -1761,9 +1896,18 @@ fn render_help(frame: &mut Frame, area: Rect) {
                 ),
                 ("S", "submit review (verdict + summary)"),
                 ("?", "toggle this help"),
-                ("D", "toggle description / conversation panel"),
-                ("Esc", "close help / description"),
+                ("D", "toggle PR description panel"),
+                ("C", "toggle Conversation panel (all threads + jump)"),
+                ("Esc", "close help / description / conversation"),
                 ("q", "back to dashboard"),
+            ],
+        ),
+        (
+            "Conversation panel",
+            &[
+                ("j / k", "next / prev thread"),
+                ("g / G", "first / last thread"),
+                ("Enter", "jump to thread in diff"),
             ],
         ),
     ];
@@ -1792,6 +1936,110 @@ fn render_help(frame: &mut Frame, area: Rect) {
         lines.push(Line::raw(""));
     }
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_conversation(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
+    let threads = state.conversation_threads();
+    let total = threads.len();
+
+    let title =
+        format!(" CONVERSATION  {total}  (Enter: jump · j/k: nav · g/G: first/last · Esc: close) ");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    if threads.is_empty() {
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let msg = if state.session.hide_resolved {
+            "No unresolved review comments. Press H to also show resolved threads."
+        } else {
+            "No review comments yet."
+        };
+        let para = Paragraph::new(Line::styled(
+            msg.to_owned(),
+            Style::default().fg(Color::DarkGray),
+        ));
+        frame.render_widget(para, inner);
+        return;
+    }
+
+    let items: Vec<ListItem> = threads
+        .iter()
+        .map(|t| ListItem::new(conversation_row(t)))
+        .collect();
+
+    let list = List::new(items).block(block).highlight_style(
+        Style::default()
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let mut list_state = ListState::default();
+    list_state.select(Some(state.conversation_cursor.min(total - 1)));
+    frame.render_stateful_widget(list, area, &mut list_state);
+}
+
+/// Format a single conversation row.
+///
+/// `path:line  @author  preview  [tags]`
+///
+/// `tags` are appended only when relevant: replies count > 1, resolved,
+/// outdated, or pending. Body preview is the first comment's first line,
+/// truncated to 60 chars.
+fn conversation_row(t: &CommentThread) -> Line<'static> {
+    let first = t.comments.first();
+    let author = first.map(|c| c.author.as_str()).unwrap_or("?");
+    let preview_raw = first.map(|c| c.body.as_str()).unwrap_or("");
+    let preview = preview_oneline(preview_raw, 60);
+
+    let mut tags: Vec<String> = Vec::new();
+    let reply_count = t.comments.len().saturating_sub(1);
+    if reply_count > 0 {
+        let word = if reply_count == 1 { "reply" } else { "replies" };
+        tags.push(format!("[{reply_count} {word}]"));
+    }
+    if t.is_resolved {
+        tags.push("[resolved]".to_owned());
+    }
+    if t.is_outdated {
+        tags.push("[outdated]".to_owned());
+    }
+    if first.is_some_and(|c| c.is_pending) {
+        tags.push("[pending]".to_owned());
+    }
+
+    let mut spans: Vec<Span<'static>> = vec![
+        Span::styled(
+            format!("{}:{}", t.path, t.line),
+            Style::default().fg(Color::Cyan),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            format!("@{author}"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::raw(preview),
+    ];
+    for tag in tags {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(tag, Style::default().fg(Color::DarkGray)));
+    }
+    Line::from(spans)
+}
+
+fn preview_oneline(body: &str, max: usize) -> String {
+    let first_line = body.lines().next().unwrap_or("").trim();
+    if first_line.chars().count() <= max {
+        first_line.to_owned()
+    } else {
+        let truncated: String = first_line.chars().take(max).collect();
+        format!("{truncated}…")
+    }
 }
 
 fn render_description(frame: &mut Frame, area: Rect, state: &ReviewState) {
@@ -2697,11 +2945,14 @@ mod tests {
         assert!(!s.show_help);
         apply_key(&mut s, KeyCode::Char('?'));
         assert!(s.show_help);
-        let lines = render_to_lines(&mut s, 100, 30);
+        // Help is taller than the diff body — give it room so all sections
+        // are visible, otherwise late entries get clipped.
+        let lines = render_to_lines(&mut s, 100, 50);
         let joined = lines.join("\n");
         assert!(joined.contains("Keymap"));
         assert!(joined.contains("Navigation"));
         assert!(joined.contains("apply"));
+        assert!(joined.contains("Conversation panel"));
         apply_key(&mut s, KeyCode::Esc);
         assert!(!s.show_help);
     }
@@ -2856,5 +3107,170 @@ mod tests {
         let result = std::fs::read_to_string(&path).unwrap();
         assert_eq!(result, "a\nX\nY\nZ\nd\n");
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn capital_c_toggles_conversation_overlay() {
+        let mut s = state(&["a.rs"], vec![thread("T1", "a.rs", 1, "hi")]);
+        assert!(!s.show_conversation);
+        apply_key(&mut s, KeyCode::Char('C'));
+        assert!(s.show_conversation);
+        apply_key(&mut s, KeyCode::Char('C'));
+        assert!(!s.show_conversation);
+    }
+
+    #[test]
+    fn conversation_overlay_renders_threads() {
+        let mut s = state(
+            &["a.rs", "b.rs"],
+            vec![
+                thread("T1", "a.rs", 1, "first comment"),
+                thread("T2", "b.rs", 2, "second comment"),
+            ],
+        );
+        apply_key(&mut s, KeyCode::Char('C'));
+        let lines = render_to_lines(&mut s, 120, 20);
+        let joined = lines.join("\n");
+        assert!(joined.contains("CONVERSATION"));
+        assert!(joined.contains("a.rs:1"));
+        assert!(joined.contains("b.rs:2"));
+        assert!(joined.contains("first comment"));
+    }
+
+    #[test]
+    fn conversation_threads_sorted_by_path_then_line() {
+        let s = state(
+            &["b.rs", "a.rs"],
+            vec![
+                thread("T2", "b.rs", 5, "b1"),
+                thread("T3", "a.rs", 10, "a2"),
+                thread("T1", "a.rs", 3, "a1"),
+            ],
+        );
+        let order: Vec<(String, u32)> = s
+            .conversation_threads()
+            .iter()
+            .map(|t| (t.path.clone(), t.line))
+            .collect();
+        assert_eq!(
+            order,
+            vec![("a.rs".into(), 3), ("a.rs".into(), 10), ("b.rs".into(), 5),]
+        );
+    }
+
+    #[test]
+    fn conversation_j_k_moves_cursor() {
+        let mut s = state(
+            &["a.rs", "b.rs"],
+            vec![thread("T1", "a.rs", 1, "x"), thread("T2", "b.rs", 1, "y")],
+        );
+        apply_key(&mut s, KeyCode::Char('C'));
+        assert_eq!(s.conversation_cursor, 0);
+        apply_key(&mut s, KeyCode::Char('j'));
+        assert_eq!(s.conversation_cursor, 1);
+        apply_key(&mut s, KeyCode::Char('j'));
+        assert_eq!(s.conversation_cursor, 1, "clamps at end");
+        apply_key(&mut s, KeyCode::Char('k'));
+        assert_eq!(s.conversation_cursor, 0);
+    }
+
+    #[test]
+    fn conversation_g_and_capital_g_jump_to_ends() {
+        let mut s = state(
+            &["a.rs", "b.rs", "c.rs"],
+            vec![
+                thread("T1", "a.rs", 1, "x"),
+                thread("T2", "b.rs", 1, "y"),
+                thread("T3", "c.rs", 1, "z"),
+            ],
+        );
+        apply_key(&mut s, KeyCode::Char('C'));
+        apply_key(&mut s, KeyCode::Char('G'));
+        assert_eq!(s.conversation_cursor, 2);
+        apply_key(&mut s, KeyCode::Char('g'));
+        assert_eq!(s.conversation_cursor, 0);
+    }
+
+    #[test]
+    fn conversation_enter_jumps_and_closes_overlay() {
+        let mut s = state(&["a.rs", "b.rs"], vec![thread("T1", "b.rs", 1, "jump-me")]);
+        // Sanity: cursor starts on a.rs.
+        assert_eq!(s.selected_file_idx(), Some(0));
+        apply_key(&mut s, KeyCode::Char('C'));
+        assert!(s.show_conversation);
+        apply_key(&mut s, KeyCode::Enter);
+        assert!(!s.show_conversation, "Enter should close the overlay");
+        assert_eq!(
+            s.selected_file_idx(),
+            Some(1),
+            "Enter should jump file panel to the thread's file"
+        );
+        assert!(
+            s.cursor_on_thread(),
+            "diff cursor should land on the thread row"
+        );
+    }
+
+    #[test]
+    fn conversation_hides_resolved_when_toggle_active() {
+        let mut s = state(
+            &["a.rs"],
+            vec![thread("T1", "a.rs", 1, "open"), {
+                let mut t = thread("T2", "a.rs", 2, "resolved");
+                t.is_resolved = true;
+                t
+            }],
+        );
+        assert_eq!(s.conversation_threads().len(), 2);
+        apply_key(&mut s, KeyCode::Char('H')); // hide-resolved on
+        assert_eq!(
+            s.conversation_threads().len(),
+            1,
+            "resolved thread should drop out of the list"
+        );
+    }
+
+    #[test]
+    fn conversation_esc_closes_overlay() {
+        let mut s = state(&["a.rs"], vec![thread("T1", "a.rs", 1, "x")]);
+        apply_key(&mut s, KeyCode::Char('C'));
+        assert!(s.show_conversation);
+        apply_key(&mut s, KeyCode::Esc);
+        assert!(!s.show_conversation);
+    }
+
+    #[test]
+    fn conversation_cursor_clamped_after_refresh() {
+        let mut s = state(
+            &["a.rs"],
+            vec![thread("T1", "a.rs", 1, "a"), thread("T2", "a.rs", 2, "b")],
+        );
+        apply_key(&mut s, KeyCode::Char('C'));
+        apply_key(&mut s, KeyCode::Char('j'));
+        assert_eq!(s.conversation_cursor, 1);
+        // Refresh with only one thread → cursor must clamp.
+        let new_meta = meta(&["a.rs"]);
+        s.apply_refresh(new_meta, vec![thread("T1", "a.rs", 1, "a")]);
+        assert_eq!(s.conversation_cursor, 0);
+    }
+
+    #[test]
+    fn conversation_overlay_empty_state_message() {
+        let mut s = state(&["a.rs"], vec![]);
+        apply_key(&mut s, KeyCode::Char('C'));
+        let lines = render_to_lines(&mut s, 120, 20);
+        let joined = lines.join("\n");
+        assert!(joined.contains("CONVERSATION"));
+        assert!(joined.contains("No review comments"));
+    }
+
+    #[test]
+    fn capital_c_closes_help_when_opened() {
+        let mut s = state(&["a.rs"], vec![]);
+        apply_key(&mut s, KeyCode::Char('?'));
+        assert!(s.show_help);
+        apply_key(&mut s, KeyCode::Char('C'));
+        assert!(!s.show_help, "opening conversation closes help");
+        assert!(s.show_conversation);
     }
 }

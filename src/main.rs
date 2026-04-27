@@ -162,7 +162,8 @@ async fn review(pr_number: u64, cleanup: bool, json: bool) -> Result<()> {
     if json {
         // JSON export still does the full eager compute — `--json` is a
         // batch-export flag, not the interactive path.
-        let diffs = diff::compute_diffs(&repo_root, &desired_path, &meta.base_sha, &meta.files)?;
+        let diffs =
+            diff::compute_pr_diffs(&repo_root, &meta.base_sha, &meta.head_sha, &meta.files)?;
         let output = serde_json::json!({
             "pr_number": pr_number,
             "title": meta.title,

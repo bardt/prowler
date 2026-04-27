@@ -39,60 +39,95 @@ pub enum DiffLine {
     Moved(String),
 }
 
-pub fn compute_diffs(
+/// Compute the PR's base→head diff. Both sides are read from the git object
+/// database — the worktree is intentionally NOT consulted, so local edits do
+/// not leak into the "what the PR proposes" view. For HEAD→worktree (your
+/// uncommitted edits on top of the PR), use [`compute_local_diffs`].
+pub fn compute_pr_diffs(
     repo_root: &Path,
-    worktree_path: &Path,
     base_sha: &str,
+    head_sha: &str,
     files: &[crate::github::PrFile],
 ) -> Result<Vec<FileDiff>> {
     files
         .iter()
-        .map(|f| diff_file(repo_root, worktree_path, base_sha, f))
+        .map(|f| diff_pr_file(repo_root, base_sha, head_sha, f))
         .collect()
 }
 
-fn diff_file(
+fn diff_pr_file(
     repo_root: &Path,
-    worktree_path: &Path,
     base_sha: &str,
+    head_sha: &str,
     file: &crate::github::PrFile,
 ) -> Result<FileDiff> {
     let base_path = file.previous_path.as_deref().unwrap_or(&file.path);
     let base_content = if file.status == "added" {
         String::new()
     } else {
-        base_content(repo_root, base_sha, base_path)?
+        read_blob(repo_root, base_sha, base_path)?
     };
     let head_content = if file.status == "removed" {
         String::new()
     } else {
-        head_content(worktree_path, &file.path)?
+        read_blob(repo_root, head_sha, &file.path)?
     };
     let mut diff = diff_texts(&file.path, &base_content, &head_content);
     diff.previous_path = file.previous_path.clone();
     Ok(diff)
 }
 
-fn base_content(repo_root: &Path, base_sha: &str, path: &str) -> Result<String> {
+/// Compute head→worktree diff for the HeadLocal mode. Old side is the PR's
+/// HEAD blob (read from `head_sha`); new side is the worktree file. This is
+/// where local edits should appear.
+pub fn compute_local_diffs(
+    repo_root: &Path,
+    worktree_path: &Path,
+    head_sha: &str,
+    files: &[crate::github::PrFile],
+) -> Result<Vec<FileDiff>> {
+    files
+        .iter()
+        .map(|f| diff_local_file(repo_root, worktree_path, head_sha, f))
+        .collect()
+}
+
+fn diff_local_file(
+    repo_root: &Path,
+    worktree_path: &Path,
+    head_sha: &str,
+    file: &crate::github::PrFile,
+) -> Result<FileDiff> {
+    // Tolerate a missing blob at head_sha (file added locally); tolerate a
+    // missing worktree file (file removed locally). Either way an empty side
+    // produces a clean additions/removals diff.
+    let base_content = read_at_sha(repo_root, head_sha, &file.path).unwrap_or_default();
+    let head_content = read_worktree(worktree_path, &file.path)?;
+    let mut diff = diff_texts(&file.path, &base_content, &head_content);
+    diff.previous_path = file.previous_path.clone();
+    Ok(diff)
+}
+
+fn read_blob(repo_root: &Path, sha: &str, path: &str) -> Result<String> {
     let output = Command::new("git")
         .args([
             "-C",
             &repo_root.to_string_lossy(),
             "show",
-            &format!("{base_sha}:{path}"),
+            &format!("{sha}:{path}"),
         ])
         .output()
         .context("failed to run `git show`")?;
     if !output.status.success() {
         anyhow::bail!(
-            "`git show {base_sha}:{path}` failed: {}",
+            "`git show {sha}:{path}` failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn head_content(worktree_path: &Path, path: &str) -> Result<String> {
+fn read_worktree(worktree_path: &Path, path: &str) -> Result<String> {
     let file_path = worktree_path.join(path);
     if !file_path.exists() {
         return Ok(String::new());

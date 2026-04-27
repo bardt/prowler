@@ -169,10 +169,8 @@ position in each.
 
 ## Current milestone
 
-**M19 — Conversation overlay.** Dedicated panel listing every inline
-thread with `Enter` to jump to its diff anchor. Mirrors GitHub's
-Conversation tab as a separate overlay (`C`); description (`D`) stays
-as-is. Targets v1.0.
+**v1.0 release candidate.** All v1 milestones (M1–M19) shipped. Pending
+items moved to v2 / backlog.
 
 ## Milestones overview
 
@@ -198,7 +196,7 @@ as-is. Targets v1.0.
 | M16 | Hide-resolved toggle + file-panel fuzzy filter | ✅ |
 | M17 | Configuration file (`~/.config/prowler/config.toml`) | ✅ |
 | M18 | 1.0 polish: empty states, loading hints, persisted UI prefs | ✅ |
-| M19 | Conversation overlay (all threads + jump-to-diff) | 🚧 |
+| M19 | Conversation overlay (all threads + jump-to-diff) | ✅ |
 
 ### v2 (post-1.0, opt-in / experimental)
 
@@ -408,6 +406,39 @@ new milestone.
     won't translate).
   - Behaviour change vs current; ship as a config toggle so users can
     pick continuity-vs-independence.
+- **Lazygit-style focus model — Files vs Diff as nested containers.**
+  Today `Tab` cycles Files → Base → Head → Files as a flat ring. Move
+  closer to lazygit: two top-level containers (Files panel and Diff
+  container holding Base+Head), with the diff container "captured"
+  once entered.
+  - `Enter` on a file row in Files → focus moves into Diff (default
+    side: Head). Today Enter on a file row only folds folders; on a
+    file row it's a no-op.
+  - Inside Diff, `Tab` cycles Base ↔ Head only — does not return to
+    Files.
+  - `Esc` from inside Diff → focus back to Files. Today `Esc` only
+    closes overlays / clears selection.
+  - New "next/prev file" keys usable while focus is inside Diff so the
+    user can walk files without bouncing back to the panel. Likely
+    `J`/`K` or `Ctrl+n`/`Ctrl+p`. Avoid `]`/`[` — taken by next/prev
+    hunk.
+  - `1`/`2`/`3` direct-jump keys still work as escape hatches.
+  - When Enter-ing into Diff, land cursor on the persisted per-file
+    cursor (already tracked by `cursor`/`local_cursor`) — no special
+    "first hunk" logic.
+  - `n`/`N` (cross-file thread nav) keeps current behaviour — it
+    already moves focus into Head when jumping, which fits the new
+    model.
+  - Risk: muscle memory churn. Ship behind a config toggle
+    (`review.focus_model = "flat" | "nested"`, default `flat` for v1
+    parity, flip default once the new model has soaked).
+  - Open questions:
+    - Hotkey for next/prev file from inside Diff?
+    - Should `Esc` inside Diff also clear an active `V` selection
+      first (current behaviour) and *then* return to Files on a second
+      press, or do both at once?
+    - When focus is on Files and `Tab` is pressed, where does it go —
+      into Diff (back-compat) or stay on Files (strict containers)?
 - **Mockable GitHub client for end-to-end tests.** The headless harness
   (state + render + event layers) is in place — `apply_key` is pure,
   `ReviewState::for_test` builds a state from fixtures, and `TestBackend`
