@@ -6,6 +6,11 @@ pub struct PrFile {
     pub path: String,
     pub previous_path: Option<String>,
     pub status: String,
+    /// Lines added in this file according to GitHub's GraphQL response. Used
+    /// for the file-tree counters before the local diff has been computed —
+    /// `compute_pr_diffs` is lazy, so unvisited files would otherwise show 0.
+    pub additions: u64,
+    pub deletions: u64,
     /// GitHub's per-viewer viewed state for this file: `VIEWED`, `DISMISSED`, or
     /// `UNVIEWED`. Used to seed `Session.files` on first open from a new machine.
     pub viewer_viewed_state: String,
@@ -199,6 +204,8 @@ pub async fn fetch_pr(
             path: f.path,
             previous_path: None,
             status: status_from_change_type(&f.change_type).to_owned(),
+            additions: f.additions,
+            deletions: f.deletions,
             viewer_viewed_state: f.viewer_viewed_state,
         })
         .collect();
@@ -806,11 +813,7 @@ struct GqlFilesConn {
 struct GqlFile {
     path: String,
     change_type: String,
-    // additions/deletions are kept in the query for future use (file-list line
-    // counts currently come from the diff itself).
-    #[allow(dead_code)]
     additions: u64,
-    #[allow(dead_code)]
     deletions: u64,
     viewer_viewed_state: String,
 }

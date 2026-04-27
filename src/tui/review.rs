@@ -136,6 +136,10 @@ pub struct ReviewState {
     /// to ratatui's `List` widget — `ListState::select` keeps the cursor in
     /// view automatically.
     conversation_cursor: usize,
+    /// Horizontal scroll offset for the file panel. Lets long file paths
+    /// peek out of the fixed 36-col panel when Files is focused.
+    /// Mutated by `←`/`→` while focus is `Files`.
+    files_hscroll: u16,
     /// Two-step delete confirmation: first `X` press records the comment id and
     /// timestamp; a second `X` press on the same comment within `STATUS_TTL`
     /// triggers the actual delete.
@@ -284,6 +288,7 @@ impl ReviewState {
             show_help: false,
             show_conversation: false,
             conversation_cursor: 0,
+            files_hscroll: 0,
             pending_delete: None,
             file_filter: String::new(),
             file_filter_editing: false,
@@ -590,6 +595,8 @@ impl ReviewState {
                 path: f.path.clone(),
                 previous_path: f.previous_path.clone(),
                 status: f.status.clone(),
+                additions: f.additions,
+                deletions: f.deletions,
                 viewer_viewed_state: f.viewer_viewed_state.clone(),
             },
             None => return,
@@ -665,13 +672,23 @@ impl ReviewState {
     }
 
     /// Horizontal scroll step. Five columns balances precision and speed.
+    /// Files focus scrolls the panel; diff focus scrolls the active diff
+    /// pane (per-file, per-mode).
     pub fn scroll_left(&mut self) {
+        if matches!(self.focus, Focus::Files) {
+            self.files_hscroll = self.files_hscroll.saturating_sub(5);
+            return;
+        }
         let Some(i) = self.selected_idx() else { return };
         let cur = self.hscroll_at(i);
         self.set_hscroll(i, cur.saturating_sub(5));
     }
 
     pub fn scroll_right(&mut self) {
+        if matches!(self.focus, Focus::Files) {
+            self.files_hscroll = self.files_hscroll.saturating_add(5);
+            return;
+        }
         let Some(i) = self.selected_idx() else { return };
         let cur = self.hscroll_at(i);
         self.set_hscroll(i, cur.saturating_add(5));
@@ -796,6 +813,8 @@ impl ReviewState {
                 path: self.diffs[i].path.clone(),
                 previous_path: self.diffs[i].previous_path.clone(),
                 status: "modified".into(),
+                additions: 0,
+                deletions: 0,
                 viewer_viewed_state: String::new(),
             };
             match crate::diff::compute_pr_diffs(
@@ -828,6 +847,8 @@ impl ReviewState {
             path: self.diffs[file_idx].path.clone(),
             previous_path: None,
             status: "modified".into(),
+            additions: 0,
+            deletions: 0,
             viewer_viewed_state: String::new(),
         };
         let diff = match crate::diff::compute_local_diffs(
@@ -1777,9 +1798,11 @@ impl ReviewState {
     }
 
     fn totals(&self) -> (usize, usize) {
-        self.diffs
-            .iter()
-            .fold((0, 0), |(a, r), d| (a + d.added, r + d.removed))
+        // Sourced from GitHub's per-file additions/deletions so the header
+        // shows real numbers before any diff has been computed locally.
+        self.meta.files.iter().fold((0, 0), |(a, r), f| {
+            (a + f.additions as usize, r + f.deletions as usize)
+        })
     }
 }
 
@@ -2407,7 +2430,36 @@ fn previous_path_label(prev: &str, current: &str) -> String {
     format!("…/{tail}")
 }
 
+/// Drop the leading `offset` characters from a `Line`, preserving span
+/// styles. Spans entirely within the cut prefix are dropped; the first
+/// surviving span is sliced. Lines shorter than `offset` collapse to empty.
+/// `offset` is character count, not byte count, to keep `chars()` aligned
+/// with the visible width for ASCII-and-light-unicode TUI content.
+fn shift_line_left(line: Line<'static>, offset: usize) -> Line<'static> {
+    if offset == 0 {
+        return line;
+    }
+    let mut remaining = offset;
+    let mut out: Vec<Span<'static>> = Vec::new();
+    for span in line.spans {
+        if remaining == 0 {
+            out.push(span);
+            continue;
+        }
+        let span_chars = span.content.chars().count();
+        if span_chars <= remaining {
+            remaining -= span_chars;
+            continue;
+        }
+        let kept: String = span.content.chars().skip(remaining).collect();
+        remaining = 0;
+        out.push(Span::styled(kept, span.style));
+    }
+    Line::from(out)
+}
+
 fn render_files(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
+    let hscroll = state.files_hscroll as usize;
     let items: Vec<ListItem> = state
         .visible_rows
         .iter()
@@ -2417,13 +2469,14 @@ fn render_files(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
             } => {
                 let indent = "  ".repeat(row.depth);
                 let chevron = if *collapsed { "\u{25B8}" } else { "\u{25BE}" };
-                ListItem::new(Line::from(vec![
+                let line = Line::from(vec![
                     Span::raw(indent),
                     Span::styled(
                         format!("{chevron} {name}/"),
                         Style::default().fg(Color::Cyan),
                     ),
-                ]))
+                ]);
+                ListItem::new(shift_line_left(line, hscroll))
             }
             VisibleItem::File { diff_idx, name } => {
                 let d = &state.diffs[*diff_idx];
@@ -2463,11 +2516,20 @@ fn render_files(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
                             .add_modifier(Modifier::ITALIC),
                     ));
                 }
+                // Counts come from `meta.files` (GitHub's per-file numbers)
+                // so the badges show real values before the local diff has
+                // been computed for that file.
+                let (added, removed) = state
+                    .meta
+                    .files
+                    .get(*diff_idx)
+                    .map(|f| (f.additions, f.deletions))
+                    .unwrap_or((d.added as u64, d.removed as u64));
                 spans.extend([
                     Span::raw("  "),
-                    Span::styled(format!("+{}", d.added), Style::default().fg(Color::Green)),
+                    Span::styled(format!("+{added}"), Style::default().fg(Color::Green)),
                     Span::raw(" "),
-                    Span::styled(format!("-{}", d.removed), Style::default().fg(Color::Red)),
+                    Span::styled(format!("-{removed}"), Style::default().fg(Color::Red)),
                 ]);
                 // Unresolved comment-thread count (resolved threads silently
                 // counted out so the badge tracks attention demand).
@@ -2483,7 +2545,7 @@ fn render_files(frame: &mut Frame, area: Rect, state: &mut ReviewState) {
                         Style::default().fg(Color::Cyan),
                     ));
                 }
-                ListItem::new(Line::from(spans))
+                ListItem::new(shift_line_left(Line::from(spans), hscroll))
             }
         })
         .collect();
@@ -2642,6 +2704,8 @@ mod tests {
                     path: (*p).to_owned(),
                     previous_path: None,
                     status: "modified".into(),
+                    additions: 1,
+                    deletions: 1,
                     viewer_viewed_state: "UNVIEWED".into(),
                 })
                 .collect(),
