@@ -1417,24 +1417,52 @@ impl ReviewState {
         })
     }
 
+    /// Lazygit-style nested focus model: Files and Diff are containers. Tab
+    /// is contained — it cycles Base ↔ Head only when focus is already inside
+    /// the Diff container. From Files, Tab is a no-op; the user drills in
+    /// with `Enter` on a file row and drills out with `Esc`.
     pub fn cycle_focus(&mut self) {
         self.focus = match self.focus {
-            Focus::Files => Focus::Base,
+            Focus::Files => Focus::Files,
             Focus::Base => Focus::Head,
-            Focus::Head => Focus::Files,
+            Focus::Head => Focus::Base,
         };
+        self.ensure_diff_for_selected();
     }
 
     pub fn cycle_focus_back(&mut self) {
         self.focus = match self.focus {
-            Focus::Files => Focus::Head,
-            Focus::Base => Focus::Files,
+            Focus::Files => Focus::Files,
+            Focus::Base => Focus::Head,
             Focus::Head => Focus::Base,
         };
+        self.ensure_diff_for_selected();
     }
 
     pub fn set_focus(&mut self, focus: Focus) {
         self.focus = focus;
+    }
+
+    /// Drill from Files into the Diff container. Lands on HEAD by default
+    /// and ensures the file's diff is computed so the panes are populated.
+    /// No-op when the file panel cursor is not on a file row.
+    pub fn enter_diff(&mut self) {
+        if self.selected_idx().is_none() {
+            return;
+        }
+        self.focus = Focus::Head;
+        self.ensure_diff_for_selected();
+        if matches!(self.diff_mode, DiffMode::HeadLocal) {
+            self.ensure_local_for_current();
+        }
+    }
+
+    /// Leave the Diff container and return focus to the file panel. No-op
+    /// when already on Files. Used by the layered Esc handler.
+    pub fn exit_diff(&mut self) {
+        if matches!(self.focus, Focus::Base | Focus::Head) {
+            self.focus = Focus::Files;
+        }
     }
 
     pub fn move_down(&mut self) {
@@ -1489,6 +1517,44 @@ impl ReviewState {
         self.ensure_diff_for_selected();
         if matches!(self.diff_mode, DiffMode::HeadLocal) {
             self.ensure_local_for_current();
+        }
+    }
+
+    /// `J` from inside the Diff container: jump to the next *file* row,
+    /// skipping folder headers. Focus stays on the current diff side so the
+    /// user can sweep files without bouncing back to the panel.
+    pub fn next_file_in_diff(&mut self) {
+        if self.visible_rows.is_empty() {
+            return;
+        }
+        let cur = self.list_state.selected().unwrap_or(0);
+        let target = self.visible_rows[cur + 1..]
+            .iter()
+            .position(|r| matches!(r.item, VisibleItem::File { .. }))
+            .map(|rel| cur + 1 + rel);
+        if let Some(idx) = target {
+            self.list_state.select(Some(idx));
+            self.ensure_diff_for_selected();
+            if matches!(self.diff_mode, DiffMode::HeadLocal) {
+                self.ensure_local_for_current();
+            }
+        }
+    }
+
+    pub fn prev_file_in_diff(&mut self) {
+        if self.visible_rows.is_empty() {
+            return;
+        }
+        let cur = self.list_state.selected().unwrap_or(0);
+        let target = self.visible_rows[..cur]
+            .iter()
+            .rposition(|r| matches!(r.item, VisibleItem::File { .. }));
+        if let Some(idx) = target {
+            self.list_state.select(Some(idx));
+            self.ensure_diff_for_selected();
+            if matches!(self.diff_mode, DiffMode::HeadLocal) {
+                self.ensure_local_for_current();
+            }
         }
     }
 
@@ -1773,13 +1839,28 @@ pub fn apply_key(state: &mut ReviewState, key: KeyCode) -> bool {
         KeyCode::Char('H') => state.toggle_hide_resolved(),
         KeyCode::Char('V') => state.start_selection(),
         KeyCode::Esc => {
-            state.show_help = false;
-            state.show_description = false;
-            state.show_conversation = false;
-            state.clear_selection();
+            // Layered Esc — close one thing per press, in priority order.
+            // Matches lazygit-style "drill out" feel.
+            if state.show_help || state.show_description || state.show_conversation {
+                state.show_help = false;
+                state.show_description = false;
+                state.show_conversation = false;
+            } else if state.selection_active() {
+                state.clear_selection();
+            } else {
+                state.exit_diff();
+            }
         }
         KeyCode::Char('j') | KeyCode::Down => state.move_down(),
         KeyCode::Char('k') | KeyCode::Up => state.move_up(),
+        // `J` / `K` jump file inside the Diff container without losing focus.
+        // No-op outside Diff so the file panel keeps its plain `j` / `k`.
+        KeyCode::Char('J') if matches!(state.focus, Focus::Base | Focus::Head) => {
+            state.next_file_in_diff()
+        }
+        KeyCode::Char('K') if matches!(state.focus, Focus::Base | Focus::Head) => {
+            state.prev_file_in_diff()
+        }
         KeyCode::Char('g') if state.show_conversation => state.conversation_first(),
         KeyCode::Char('G') if state.show_conversation => state.conversation_last(),
         KeyCode::Left => state.scroll_left(),
@@ -1791,11 +1872,12 @@ pub fn apply_key(state: &mut ReviewState, key: KeyCode) -> bool {
         KeyCode::Char(' ') => state.toggle_folder(),
         KeyCode::Enter if state.show_conversation => state.jump_to_thread_under_cursor(),
         KeyCode::Enter => match state.focus {
-            // Files panel: Enter folds/unfolds the folder under the cursor.
+            // Files panel: Enter folds/unfolds a folder, or drills into the
+            // Diff container (focus → Head) on a file row.
             Focus::Files if state.cursor_on_folder() => state.toggle_folder(),
+            Focus::Files => state.enter_diff(),
             // Diff panes: Enter expands/collapses the comment thread under the cursor.
             Focus::Base | Focus::Head => state.toggle_thread(),
-            _ => {}
         },
         KeyCode::Char('n') => state.goto_next_thread(),
         KeyCode::Char('N') => state.goto_prev_thread(),
@@ -1842,8 +1924,14 @@ fn render_help(frame: &mut Frame, area: Rect) {
                 ("← / →", "scroll diff horizontally (5 cols)"),
                 ("] / [", "next / previous hunk"),
                 ("n / N", "next / previous comment thread (any file)"),
-                ("Tab / Shift+Tab", "cycle panel focus"),
-                ("1 / 2 / 3 / 4", "focus Files / Base / Head / Local"),
+                ("Tab / Shift+Tab", "(in Diff) cycle Base ↔ Head"),
+                ("Enter (on file)", "drill into Diff at HEAD side"),
+                ("Esc (in Diff)", "drill out — back to Files panel"),
+                ("J / K", "(in Diff) next / prev file, keep focus"),
+                (
+                    "1 / 2 / 3 / 4",
+                    "focus Files / Base / Head / Local (escape hatch)",
+                ),
                 ("g / G", "first / last (in dashboard)"),
                 ("/", "filter file panel by substring"),
             ],
@@ -2668,19 +2756,27 @@ mod tests {
     }
 
     #[test]
-    fn tab_cycles_focus_forward() {
+    fn tab_in_files_is_noop_and_cycles_inside_diff() {
         let mut s = state(&["a.rs"], vec![]);
+        // From Files, Tab does nothing — drilling in is Enter's job.
+        apply_key(&mut s, KeyCode::Tab);
+        assert_eq!(s.focus, Focus::Files);
+        // Once inside Diff, Tab cycles Base ↔ Head only.
+        s.set_focus(Focus::Head);
         apply_key(&mut s, KeyCode::Tab);
         assert_eq!(s.focus, Focus::Base);
         apply_key(&mut s, KeyCode::Tab);
         assert_eq!(s.focus, Focus::Head);
-        apply_key(&mut s, KeyCode::Tab);
-        assert_eq!(s.focus, Focus::Files);
     }
 
     #[test]
-    fn shift_tab_cycles_focus_backward() {
+    fn shift_tab_in_files_is_noop_and_cycles_inside_diff() {
         let mut s = state(&["a.rs"], vec![]);
+        apply_key(&mut s, KeyCode::BackTab);
+        assert_eq!(s.focus, Focus::Files);
+        s.set_focus(Focus::Head);
+        apply_key(&mut s, KeyCode::BackTab);
+        assert_eq!(s.focus, Focus::Base);
         apply_key(&mut s, KeyCode::BackTab);
         assert_eq!(s.focus, Focus::Head);
     }
@@ -2987,16 +3083,16 @@ mod tests {
     }
 
     #[test]
-    fn enter_does_not_toggle_thread_when_focus_is_files() {
-        // Even if the diff cursor would be on a thread row, Enter routes to
-        // folder-toggle when focus is Files.
+    fn enter_on_file_row_drills_into_diff_without_toggling_thread() {
+        // Pressing Enter on a file row in Files focus drills into the Diff
+        // container (focus → Head). It MUST NOT also toggle the comment
+        // thread that happens to sit under the diff cursor — drilling in
+        // and expanding a thread are different actions.
         let t = thread("T1", "a.rs", 1, "hi");
         let mut s = state(&["a.rs"], vec![t]);
-        // Walk diff cursor onto a thread row, but stay focused on Files.
         let i = s.selected_file_idx().unwrap();
         let mut steps = 0;
         while s.cursor[i] < 50 && !s.cursor_on_thread() {
-            // Manually advance diff cursor without changing focus.
             s.cursor[i] += 1;
             steps += 1;
             if steps > 50 {
@@ -3006,6 +3102,7 @@ mod tests {
         assert_eq!(s.focus, Focus::Files);
         let rows_before = s.laid[i].rows.len();
         apply_key(&mut s, KeyCode::Enter);
+        assert_eq!(s.focus, Focus::Head, "Enter drills focus into HEAD");
         assert_eq!(
             s.laid[i].rows.len(),
             rows_before,
@@ -3272,5 +3369,100 @@ mod tests {
         apply_key(&mut s, KeyCode::Char('C'));
         assert!(!s.show_help, "opening conversation closes help");
         assert!(s.show_conversation);
+    }
+
+    #[test]
+    fn esc_in_diff_returns_focus_to_files() {
+        let mut s = state(&["a.rs"], vec![]);
+        apply_key(&mut s, KeyCode::Enter); // Files → Head via drill-in
+        assert_eq!(s.focus, Focus::Head);
+        apply_key(&mut s, KeyCode::Esc);
+        assert_eq!(s.focus, Focus::Files, "Esc drills out of the Diff");
+    }
+
+    #[test]
+    fn esc_clears_v_selection_before_drilling_out() {
+        let mut s = state(&["a.rs"], vec![]);
+        apply_key(&mut s, KeyCode::Enter); // drill into Head
+        s.set_focus(Focus::Head);
+        // Walk to a code line and start a V-selection.
+        let mut steps = 0;
+        while !s.cursor_on_code_line() && steps < 30 {
+            apply_key(&mut s, KeyCode::Char('j'));
+            steps += 1;
+        }
+        apply_key(&mut s, KeyCode::Char('V'));
+        assert!(s.selection_active());
+        // First Esc clears selection, focus stays in Diff.
+        apply_key(&mut s, KeyCode::Esc);
+        assert!(!s.selection_active());
+        assert_eq!(s.focus, Focus::Head, "first Esc only clears selection");
+        // Second Esc drills out.
+        apply_key(&mut s, KeyCode::Esc);
+        assert_eq!(s.focus, Focus::Files);
+    }
+
+    #[test]
+    fn esc_in_files_is_noop() {
+        let mut s = state(&["a.rs"], vec![]);
+        assert_eq!(s.focus, Focus::Files);
+        apply_key(&mut s, KeyCode::Esc);
+        assert_eq!(s.focus, Focus::Files);
+    }
+
+    #[test]
+    fn capital_j_in_diff_moves_to_next_file_keeping_focus() {
+        let mut s = state(&["a.rs", "b.rs"], vec![]);
+        apply_key(&mut s, KeyCode::Enter); // drill into Head
+        let before = s.selected_file_idx();
+        apply_key(&mut s, KeyCode::Char('J'));
+        let after = s.selected_file_idx();
+        assert_ne!(before, after, "J advances the file");
+        assert_eq!(s.focus, Focus::Head, "focus stays on diff side");
+    }
+
+    #[test]
+    fn capital_k_in_diff_moves_to_prev_file_keeping_focus() {
+        let mut s = state(&["a.rs", "b.rs"], vec![]);
+        apply_key(&mut s, KeyCode::Enter); // drill into Head
+        apply_key(&mut s, KeyCode::Char('J')); // now on b.rs
+        assert_eq!(s.selected_file_idx(), Some(1));
+        apply_key(&mut s, KeyCode::Char('K'));
+        assert_eq!(s.selected_file_idx(), Some(0));
+        assert_eq!(s.focus, Focus::Head);
+    }
+
+    #[test]
+    fn capital_j_skips_folder_rows() {
+        let mut s = state(&["src/a.rs", "src/b.rs"], vec![]);
+        apply_key(&mut s, KeyCode::Enter); // drill into Head, on src/a.rs
+        assert_eq!(s.selected_file_idx(), Some(0));
+        apply_key(&mut s, KeyCode::Char('J'));
+        // Next FILE is src/b.rs (idx 1) — must skip the folder row.
+        assert_eq!(s.selected_file_idx(), Some(1));
+    }
+
+    #[test]
+    fn capital_j_outside_diff_is_noop() {
+        // J/K only fire inside the Diff container; in Files focus they fall
+        // through unhandled. Plain `j`/`k` already drive the file panel.
+        let mut s = state(&["a.rs", "b.rs"], vec![]);
+        assert_eq!(s.focus, Focus::Files);
+        let before = s.selected_file_idx();
+        apply_key(&mut s, KeyCode::Char('J'));
+        assert_eq!(s.selected_file_idx(), before);
+    }
+
+    #[test]
+    fn enter_on_folder_still_folds() {
+        // Regression check: drilling-into-Diff must only happen on file
+        // rows, not folder rows.
+        let mut s = state(&["src/a.rs", "src/b.rs"], vec![]);
+        apply_key(&mut s, KeyCode::Char('k')); // onto folder row
+        assert!(s.cursor_on_folder());
+        let visible_before = s.visible_rows.len();
+        apply_key(&mut s, KeyCode::Enter);
+        assert_eq!(s.focus, Focus::Files, "folder Enter does not drill in");
+        assert!(s.visible_rows.len() < visible_before, "folder collapsed");
     }
 }
