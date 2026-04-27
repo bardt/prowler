@@ -147,8 +147,9 @@ position in each.
 | `n`/`N` | Next/prev comment thread (cross-file) |
 | `Enter` | Expand/collapse comment thread (or fold folder in Files panel) |
 | `?` | Toggle keymap help overlay |
-| `D` | Toggle PR description / conversation panel |
-| `Esc` | Close help / description overlay |
+| `D` | Toggle PR description panel |
+| `C` | Toggle Conversation panel (all threads, jump with `Enter`) |
+| `Esc` | Close help / description / conversation overlay |
 | `L` | Toggle diff mode: PR (base→head) ↔ Local (head→work) |
 | `R` | Refresh local diff for current file |
 | `c` (mode 2 + `V` selection) | Post selection as ` ```suggestion ` comment |
@@ -168,8 +169,10 @@ position in each.
 
 ## Current milestone
 
-**v1.0 release candidate.** All v1 milestones (M1–M18) shipped. Pending
-items moved to v2 / backlog.
+**M19 — Conversation overlay.** Dedicated panel listing every inline
+thread with `Enter` to jump to its diff anchor. Mirrors GitHub's
+Conversation tab as a separate overlay (`C`); description (`D`) stays
+as-is. Targets v1.0.
 
 ## Milestones overview
 
@@ -195,6 +198,7 @@ items moved to v2 / backlog.
 | M16 | Hide-resolved toggle + file-panel fuzzy filter | ✅ |
 | M17 | Configuration file (`~/.config/prowler/config.toml`) | ✅ |
 | M18 | 1.0 polish: empty states, loading hints, persisted UI prefs | ✅ |
+| M19 | Conversation overlay (all threads + jump-to-diff) | 🚧 |
 
 ### v2 (post-1.0, opt-in / experimental)
 
@@ -317,6 +321,44 @@ defaults without recompiling.
   closed.
 - Cargo release setup: `cargo install --git`, README, basic install
   instructions, demo gif.
+
+**M19 scope:** Conversation overlay — a dedicated, full-screen panel
+listing every inline thread on the PR, with `Enter` jumping to the
+thread's diff anchor and closing the overlay. Mirrors the GitHub web
+Conversation tab as a navigation aid; today the only way to find a
+thread is `n`/`N` paging through the diff.
+
+Shipped as a **separate overlay** (`C`), not folded into `D`. The
+description overlay stays untouched; tradeoff is one extra keybinding
+in exchange for a clean `List` widget, isolated state, and zero
+regression risk on `D`.
+
+- New state on `ReviewState`: `show_conversation: bool`,
+  `conversation_cursor: usize`, `conversation_scroll: u16`. Mutually
+  exclusive with `show_help` and `show_description` (same precedence
+  pattern as those two in `render`).
+- `C` toggles. `Esc` / `C` close. `?` / `D` close conversation and
+  open their own overlay.
+- `render_conversation` — full-overlay `List` of threads from
+  `state.meta.threads`, filtered by `session.hide_resolved`. Each row:
+  `path:line  author  "first 60 chars…"  [N replies]  [resolved?]
+  [outdated?]  [pending?]`. Sort by file path, then line.
+- `j`/`k` move cursor; `g`/`G` jump to first/last; `Enter` →
+  `jump_to_thread(thread_id)`.
+- `jump_to_thread`: find the file index for the thread's path,
+  `select_file`, `ensure_diff_computed`, scan `laid[i].rows` for the
+  matching `thread_id`, set cursor + `ensure_cursor_visible`, focus
+  Head pane, set `show_conversation = false`. Reuses the exact
+  machinery in `goto_next_thread` (review.rs:1444).
+- Help overlay (`?`) gains a "Conversation" section listing `C` /
+  `Enter` / `g` / `G`.
+- Empty state: `"No review comments yet."`
+- After `apply_refresh`, clamp `conversation_cursor` to new thread
+  count.
+- Tests: open overlay, navigate, `Enter` lands on the right file +
+  row; hide-resolved hides resolved threads from the list.
+
+Estimated diff: ~150 LOC, all in `tui/review.rs`.
 
 ### v2 details
 
