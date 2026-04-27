@@ -1152,6 +1152,12 @@ impl ReviewState {
         &self.session.worktree_path
     }
 
+    /// Canonical web URL for the PR. Used by `O` to open the PR page in
+    /// the user's browser.
+    pub fn pr_url(&self) -> &str {
+        &self.meta.url
+    }
+
     pub fn pending_review_id(&self) -> Option<&str> {
         self.meta.pending_review_id.as_deref()
     }
@@ -2014,6 +2020,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
                 ),
                 ("S", "submit review (verdict + summary)"),
                 ("Y", "copy worktree path to clipboard"),
+                ("O", "open PR page in browser"),
                 ("?", "toggle this help"),
                 ("D", "toggle PR description panel"),
                 ("C", "toggle Conversation panel (all threads + jump)"),
@@ -2721,6 +2728,7 @@ mod tests {
             state: "OPEN".into(),
             is_draft: false,
             body: String::new(),
+            url: "https://github.com/test/repo/pull/1".into(),
             conversation: Vec::new(),
             viewer_login: "viewer".into(),
         }

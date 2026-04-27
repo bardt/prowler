@@ -330,6 +330,7 @@ fn event_loop(
             KeyCode::Char('X') => delete_own_comment(&mut state)?,
             KeyCode::Char('a') => apply_suggestion(&mut state)?,
             KeyCode::Char('Y') => copy_worktree_path(&mut state)?,
+            KeyCode::Char('O') => open_pr_in_browser(&mut state)?,
             other => {
                 if review::apply_key(&mut state, other) {
                     return Ok(());
@@ -503,6 +504,33 @@ fn delete_own_comment(state: &mut review::ReviewState) -> Result<()> {
             log_post_error(&format!("[FAIL] delete comment {comment_id}: {e:#}\n"));
             state.set_status(format!("Delete failed: {e}"), review::StatusKind::Error);
         }
+    }
+    Ok(())
+}
+
+fn open_pr_in_browser(state: &mut review::ReviewState) -> Result<()> {
+    let url = state.pr_url().to_owned();
+    if url.is_empty() {
+        state.set_status("PR URL not available", review::StatusKind::Error);
+        return Ok(());
+    }
+    let prog = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    match std::process::Command::new(prog)
+        .arg(&url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(_) => state.set_status(format!("Opened {url}"), review::StatusKind::Success),
+        Err(e) => state.set_status(
+            format!("Open failed (`{prog}`): {e}"),
+            review::StatusKind::Error,
+        ),
     }
     Ok(())
 }

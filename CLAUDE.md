@@ -159,6 +159,7 @@ position in each.
 | `F5` / `Ctrl+R` | Re-fetch PR from GitHub (comments, viewed states) |
 | `S` | Submit review (verdict + summary) |
 | `Y` | Copy worktree path to clipboard |
+| `O` | Open the PR page in the system browser |
 | `q` | Back to dashboard |
 
 ### Dashboard view

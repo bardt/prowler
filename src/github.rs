@@ -37,6 +37,9 @@ pub struct PrMetadata {
     /// PR description (markdown source). Rendered as plain text in the
     /// description panel.
     pub body: String,
+    /// Canonical web URL (e.g. https://github.com/owner/repo/pull/123).
+    /// Used by `O` to open the PR page in the user's browser.
+    pub url: String,
     /// Issue-level (non-inline) comments on the PR, in posting order.
     pub conversation: Vec<ConversationComment>,
     /// Login of the currently authenticated user. Used to detect the viewer's
@@ -237,6 +240,7 @@ pub async fn fetch_pr(
         state: pr.state,
         is_draft: pr.is_draft,
         body: pr.body,
+        url: pr.url,
         conversation,
         viewer_login: viewer_login.clone(),
     };
@@ -767,6 +771,7 @@ struct GqlPullRequest {
     state: String,
     is_draft: bool,
     body: String,
+    url: String,
     base_ref_name: String,
     base_ref_oid: String,
     head_ref_name: String,
@@ -1015,6 +1020,7 @@ query($owner: String!, $name: String!, $number: Int!) {
       state
       isDraft
       body
+      url
       baseRefName
       baseRefOid
       headRefName
