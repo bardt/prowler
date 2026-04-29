@@ -174,8 +174,10 @@ position in each.
 
 ## Current milestone
 
-**v1.0 release candidate.** All v1 milestones (M1–M19) shipped. Pending
-items moved to v2 / backlog.
+**M20 — Global diff search.** Generalize `/` so Diff focus opens a
+case-insensitive substring search across every diff line in the PR, with
+`n`/`N` jumping to next / prev match and inline highlight. Last v1
+milestone before 1.0 cut.
 
 ## Milestones overview
 
@@ -202,6 +204,7 @@ items moved to v2 / backlog.
 | M17 | Configuration file (`~/.config/prowler/config.toml`) | ✅ |
 | M18 | 1.0 polish: empty states, loading hints, persisted UI prefs | ✅ |
 | M19 | Conversation overlay (all threads + jump-to-diff) | ✅ |
+| M20 | Global diff search (`/` in Diff) | 🔲 |
 
 ### v2 (post-1.0, opt-in / experimental)
 
@@ -363,6 +366,86 @@ regression risk on `D`.
 
 Estimated diff: ~150 LOC, all in `tui/review.rs`.
 
+**M20 scope:** Global grep across the PR diff. Today `/` only filters the
+file panel; on a 40-file PR there's no way to locate a symbol short of
+opening files in `$EDITOR`. M20 generalizes `/` per backlog item #12 — but
+only for Diff focus; Files-focus `/` keeps the existing fuzzy filter.
+
+UX shape mirrors GitHub web Cmd-F:
+
+- `/` (Diff focus) opens a single-line query prompt in the status row.
+- Enter commits; the query persists, all matching diff lines are
+  highlighted in place (muted-yellow bg on the matched substring; brighter
+  bg on the active match).
+- `n` / `N` jump to next / prev match across files. While query is active
+  these override the existing thread-nav binding; clearing the search
+  restores it. Document the overload in the help overlay.
+- `Esc` clears the search (slotted into the existing layered-Esc ladder
+  just before `exit_diff()`).
+- Match scope: diff-line text only — `Cell::Context` / `Added` / `Removed`
+  / `Moved`. Skip hunk headers, comment bodies, file paths, and
+  synthetic-hunk rows.
+- Case-insensitive substring (matches the file-filter convention). No
+  regex in v1.
+- Mode-aware: matches are rebuilt against the active diff mode; toggling
+  `L` re-collects against the new mode's `laid_at` rows.
+
+Reuses three existing patterns:
+
+- `file_filter_editing` branch in `apply_key` (`tui/review.rs:1852`) — same
+  shape for the new edit-mode branch (`Esc` / `Enter` / `Backspace` /
+  `Char`).
+- `goto_next_thread` (`tui/review.rs:1672`) — `goto_match` follows the
+  same recipe: `select_file` → `ensure_diff_computed` → set per-mode
+  cursor → `ensure_cursor_visible` → focus to Head/Base.
+- `to_spans` (`tui/syntax.rs:55`) — gains an optional
+  `match_overlay: Option<(Range<usize>, Color)>` arg; partition the
+  syntect-tokenized spans at match byte boundaries and stack a bg color
+  on the matched piece. Reuses existing token boundaries — no
+  re-tokenization.
+
+New state on `ReviewState`:
+
+```rust
+struct DiffMatch {
+    file_idx: usize,
+    row_idx: usize,
+    side: MatchSide,         // Base or Head cell
+    byte_start: u16,
+    byte_end: u16,
+}
+
+diff_search_query: String,
+diff_search_editing: bool,
+diff_search_matches: Vec<DiffMatch>,   // sorted (file_idx, row_idx, side)
+diff_search_current: Option<usize>,
+```
+
+New colors in `tui/diff_view.rs`: `BG_MATCH` and `BG_MATCH_CURRENT`.
+
+Status-row segment: `/<query>_` while editing; `/<query>  [N/M]` after
+commit (or `[no matches]`).
+
+Help overlay (`?`) gains a "Search" section; the row documenting `/`
+becomes "Filter file panel (Files) / Search diff (Diff)".
+
+Tests:
+
+- `diff_search_finds_matches_across_files` — fixture PR, query matches in
+  multiple files, `commit_diff_search` populates sorted matches.
+- `goto_next_match_jumps_files` — cursor + selected file advance to next
+  match's file; wraps after last.
+- `esc_clears_diff_search` — Esc with active query clears matches.
+- `n_overload_only_when_query_active` — empty query: `n` calls
+  `goto_next_thread`; non-empty: `n` calls `goto_next_match`.
+
+Estimated diff: ~250 LOC across `tui/review.rs`, `tui/diff_view.rs`,
+`tui/syntax.rs`, plus help-overlay copy.
+
+Open question: live preview (re-collect on every keystroke) vs commit-on-
+Enter only. Lean **commit-on-Enter** for v1 — matches the file-filter
+precedent and avoids per-keystroke scans on large PRs.
+
 ### v2 details
 
 **V2.1 — Impact-based file sorting** (was M14). Optional file-panel
@@ -478,10 +561,9 @@ off one at a time; cross out as shipped.
 11. **No half-page / page diff scroll.** Heavy users mash `j` or `]`.
     Add `Ctrl+d` / `Ctrl+u` (vim) and / or `PageUp` / `PageDown`.
 
-12. **`/` filter is one-shot and Files-only.** Re-pressing `/` while a
-    query is active doesn't extend it; can't filter threads in the
-    Conversation overlay either. Generalize: `/` filters whatever list
-    is focused (Files panel or Conversation list).
+12. **`/` in the Conversation overlay.** Diff side covered by M20; the
+    Conversation overlay still has no filter. Same `/` generalization:
+    type to narrow the thread list, Esc / Enter clears.
 
 ## Conventions
 
